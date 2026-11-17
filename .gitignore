@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+test-results/
+playwright-report/
+.test-workspace/
+demo/
+src/renderer/public/pdfjs/
+*.log
