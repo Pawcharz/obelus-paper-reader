@@ -2,6 +2,10 @@
 
 A pen-first reader for research papers, for Windows tablets and 2-in-1 laptops.
 
+[![Watch the 90-second demo](docs/demo.jpg)](docs/demo.mp4)
+
+*A 90-second demo: click the picture to play it.*
+
 Write in the margins as you would on paper. Your handwriting stays as ink and is turned into text in the background. Underline or circle what a note is about, and the note is linked to those exact words, equation or figure. Everything is saved as plain files in a folder you choose: PDFs, ink, notes in Markdown and reading maps in JSON. Other tools, and AI agents such as Claude Code, can read and write them too.
 
 > **Status:** a working personal tool, used daily, but young. It runs on **Windows only**, because handwriting recognition uses the Windows Ink recognizers built into Windows. Expect rough edges.
