@@ -2,9 +2,9 @@
 
 A pen-first reader for research papers, for Windows tablets and 2-in-1 laptops.
 
-[![Watch the 90-second demo](docs/demo.jpg)](docs/demo.mp4)
+https://github.com/user-attachments/assets/f3120f36-1567-4658-9d77-3fa9004a6ce5
 
-*A 90-second demo: click the picture to play it.*
+*A 90-second demo.*
 
 Write in the margins as you would on paper. Your handwriting stays as ink and is turned into text in the background. Underline or circle what a note is about, and the note is linked to those exact words, equation or figure. Everything is saved as plain files in a folder you choose: PDFs, ink, notes in Markdown and reading maps in JSON. Other tools, and AI agents such as Claude Code, can read and write them too.
 
