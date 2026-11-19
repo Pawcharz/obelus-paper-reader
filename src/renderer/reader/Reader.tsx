@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { InkPoint, MarginNote, NoteReading, PaperEntry, PreviewItem, Rect, SCHEMA_VERSION, Stroke, Target, paperLabel, type InputMode, type MathLayout } from '../../shared/types'
+import { InkPoint, MarginNote, NoteReading, PaperEntry, PreviewItem, Rect, SCHEMA_VERSION, Stroke, Target, isTyped, paperLabel, type AppMode, type InputMode, type MathLayout, type TypedNoteSize } from '../../shared/types'
+import { estimateNoteHeight, fitWithNotes, placeNote, tidyMargin, typedFontSize, TYPED_MAX_WIDTH, TYPED_SIZE_FACTOR } from '../../shared/typedNotes'
 import { wordsIn } from '../../shared/words'
 import { findArxivId, findDoi, newId } from '../../shared/ids'
 import {
@@ -127,6 +128,12 @@ interface Props {
   /** Writing space on each side, as a share of the page width (Settings; 1 by default). */
   marginShare: number
   inputMode: InputMode
+  /** Pen mode, or PC mode: mouse and keyboard, typed margin notes (Settings). */
+  mode: AppMode
+  /** Text size for new typed notes on this computer. */
+  typedNoteSize: TypedNoteSize
+  onTypedNoteSize: (s: TypedNoteSize) => void
+  onSwitchMode: (m: AppMode) => void
   /** How side notes show display equations too wide for the pane (Settings). */
   mathLayout: MathLayout
   /** Starts a reference lookup that reports back app-wide. */
@@ -148,10 +155,31 @@ type FindStop =
 interface Menu {
   x: number
   y: number
-  items: { label: string; run: () => void; testId?: string }[]
+  items: { label: string; run: () => void; testId?: string; keys?: string }[]
 }
 
-export function Reader({ source, active, marginShare, inputMode, mathLayout, onLookUp, onAddToMap, onPreviewAdded, onEntryChanged, notify }: Props) {
+/** A typed note being written or edited: shown as an editor in its place until it is saved. */
+interface Draft {
+  page: number
+  box: Rect
+  fontSize: number
+  targetIds: string[]
+  text: string
+  /** Editing an existing note; missing for a new one, made only when saved with text in it. */
+  noteId?: string
+  /** Placed automatically, so it is placed again on save if its text grew over another note. */
+  auto: boolean
+  /** A page mark made with the note, saved with it. */
+  newTarget?: Target
+  /** Where the view was, when it had to move to show the note; it goes back after saving. */
+  returnTo?: { left: number; top: number }
+  how: string
+}
+
+const PC_STRIP_KEY = 'paper-reader.pc-strip-seen'
+
+export function Reader({ source, active, marginShare, inputMode, mode, typedNoteSize, onTypedNoteSize, onSwitchMode, mathLayout, onLookUp, onAddToMap, onPreviewAdded, onEntryChanged, notify }: Props) {
+  const pc = mode === 'pc'
   const entry = source.kind === 'paper' ? source.entry : null
   const paperId = entry?.meta.id ?? null
   const readOnly = source.kind === 'preview'
@@ -170,7 +198,8 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
   const [zoom, setZoom] = useState(1.3)
   const [renderZoom, setRenderZoom] = useState(1.3)
   const [pinchTick, setPinchTick] = useState(0)
-  const [showText, setShowText] = useState(readShowText)
+  // Typed labels for handwriting are on by default in PC mode.
+  const [showText, setShowText] = useState(() => (readStored(SHOW_TEXT_KEY) === null ? mode === 'pc' : readShowText()))
   const [showLinks, setShowLinks] = useState(readShowLinks)
   const [penSize, setPenSize] = useState(() => {
     const i = Number(readStored(PEN_SIZE_KEY) ?? PEN_SIZES.length - 1)
@@ -181,7 +210,29 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
   // With the scrollbar locked, a hand resting on its edge can't jump pages; fingers still scroll.
   const [scrollLocked, setScrollLocked] = useState(() => readStored(SCROLL_LOCK_KEY) === '1')
   /** The page opens fitted with its margins, so the Fit button first offers the page alone. */
-  const [nextFit, setNextFit] = useState<'page' | 'margins'>('page')
+  const [nextFit, setNextFit] = useState<'page' | 'margins' | 'notes'>('page')
+
+  // ---- PC mode: selections waiting for an action, typed notes being written ----
+  const [pendingSel, setPendingSelState] = useState<{ page: number; first: number; last: number } | null>(null)
+  const pendingSelRef = useRef<{ page: number; first: number; last: number } | null>(null)
+  const setPendingSel = useCallback((s: { page: number; first: number; last: number } | null) => { pendingSelRef.current = s; setPendingSelState(s) }, [])
+  const [pendingRect, setPendingRectState] = useState<{ page: number; rect: Rect } | null>(null)
+  const pendingRectRef = useRef<{ page: number; rect: Rect } | null>(null)
+  const setPendingRect = useCallback((r: { page: number; rect: Rect } | null) => { pendingRectRef.current = r; setPendingRectState(r) }, [])
+  /** Notes and marks chosen together with a rubber band, on one page. */
+  const [chosen, setChosenState] = useState<{ page: number; ids: ReadonlySet<string> } | null>(null)
+  const chosenRef = useRef<{ page: number; ids: ReadonlySet<string> } | null>(null)
+  const setChosen = useCallback((c: { page: number; ids: ReadonlySet<string> } | null) => { chosenRef.current = c; setChosenState(c) }, [])
+  const [draft, setDraftState] = useState<Draft | null>(null)
+  const draftRef = useRef<Draft | null>(null)
+  const setDraft = useCallback((d: Draft | null) => { draftRef.current = d; setDraftState(d) }, [])
+  /** The mark a click on empty space just let go of, so a double-click there still links to it. */
+  const recentActive = useRef<{ id: string; at: number } | null>(null)
+  const [showKeys, setShowKeys] = useState(false)
+  const [pcStrip, setPcStrip] = useState(() => readStored(PC_STRIP_KEY) !== '1')
+  const [penOffer, setPenOffer] = useState(false)
+  const penOffered = useRef(false)
+  const [moreMenu, setMoreMenu] = useState(false)
   const showTextRef = useRef(showText)
   showTextRef.current = showText
   const [tool, setToolState] = useState<Tool>('pen')
@@ -380,9 +431,14 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
     if (fitted.current || !el || sizes.length === 0 || !active) return
     fitted.current = true
     const shown = readOnly ? 0 : margin
-    const z = Math.min(1.6, Math.max(0.7, (el.clientWidth - 40) / (sizes[0].width + shown * 2)))
+    // PC mode opens at "Fit page + notes": the page and a column for typed notes.
+    const z = pc && !readOnly
+      ? Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fitWithNotes(el.clientWidth - 30, sizes[0].width, margin, []).zoom))
+      : Math.min(1.6, Math.max(0.7, (el.clientWidth - 40) / (sizes[0].width + shown * 2)))
+    if (pc && !readOnly) { alignRef.current = 'notes'; alignLeft.current = 0 }
     setZoom(z)
     setRenderZoom(z)
+    if (pc && !readOnly) requestAnimationFrame(() => requestAnimationFrame(() => alignNow()))
   }, [sizes, active, margin, readOnly])
 
   // Bitmaps are redrawn once a zoom settles. Until then the existing ones are stretched, as in a PDF viewer.
@@ -393,14 +449,18 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
   }, [zoom, renderZoom])
 
   /** After a Fit, lines the left edge of the page, or of its margin, up with the view. */
-  const alignRef = useRef<'page' | 'wrap' | null>(null)
+  const alignRef = useRef<'page' | 'wrap' | 'notes' | null>(null)
+  /** For "Fit page + notes": the left edge in view, in page units. */
+  const alignLeft = useRef(0)
   const alignNow = () => {
     const el = scrollRef.current
     const how = alignRef.current
     alignRef.current = null
     const wrap = el?.querySelector<HTMLElement>('[data-page]')
     if (!el || !how || !wrap) return
-    el.scrollLeft = wrap.offsetLeft + (how === 'page' && !readOnly ? margin * zoomRef.current : 0) - 12
+    el.scrollLeft = how === 'notes'
+      ? wrap.offsetLeft + (margin + alignLeft.current) * zoomRef.current - 12
+      : wrap.offsetLeft + (how === 'page' && !readOnly ? margin * zoomRef.current : 0) - 12
   }
 
   // Keeps the point being zoomed exactly where it was on screen.
@@ -712,7 +772,7 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
   }, [])
 
   /** The next mark links to the note being linked; otherwise it becomes the active target. */
-  const addTarget = useCallback((target: Target, stroke?: Stroke) => {
+  const addTarget = useCallback((target: Target, stroke?: Stroke, extend = true) => {
     // Writing done before this mark belongs to the previous one.
     if (pending.current.length) {
       if (timer.current) clearTimeout(timer.current)
@@ -727,7 +787,8 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
         Date.parse(active?.createdAt ?? '') || 0,
         ...d.ink.strokes.filter((s) => activeIds.has(s.id)).map((s) => Date.parse(s.createdAt) || 0)
       )
-      if (active && canExtendTarget(active, target, Date.parse(target.createdAt) - lastDrawn)) {
+      // A mark made with the mouse never joins another by timing.
+      if (extend && active && canExtendTarget(active, target, Date.parse(target.createdAt) - lastDrawn)) {
         Object.assign(active, extendTarget(active, target))
         becameId = active.id
         return
@@ -879,6 +940,10 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
 
   const handleTap = (page: number, x: number, y: number): boolean => {
     const annotations = layerRef.current?.annotations
+    // A click anywhere ends a selection waiting for an action, and a rubber-band choice.
+    if (pendingSelRef.current) setPendingSel(null)
+    if (pendingRectRef.current) setPendingRect(null)
+    if (chosenRef.current) setChosen(null)
     const target = annotations ? targetAt(annotations.targets, page, x, y) : undefined
     if (linkingRef.current) {
       // A tap on a mark links it. A tap anywhere else cancels, so no key is ever needed.
@@ -906,7 +971,13 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       if (r) ctl.current.contextMenu(page, x, y, r.left + (x + margin) * zoomRef.current, r.top + y * zoomRef.current)
       return true
     }
-    if (activeRef.current || selectedRef.current) { logEvent('tap', { hit: 'empty', ends: 'selection', page, via: pointerVia() }); setActive(''); setSelected(''); return true }
+    if (activeRef.current || selectedRef.current) {
+      logEvent('tap', { hit: 'empty', ends: 'selection', page, via: pointerVia() })
+      if (activeRef.current) recentActive.current = { id: activeRef.current, at: Date.now() }
+      setActive('')
+      setSelected('')
+      return true
+    }
     logEvent('tap', { hit: 'empty', page, via: pointerVia() })
     return false
   }
@@ -974,13 +1045,358 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
     }
   }
 
+  // ---- PC mode: marks from selections and rectangles, typed margin notes ----
+
+  /** This computer's default view, "Fit page + notes", which sets the size of new typed notes. */
+  const defaultZoom = (): number => {
+    const el = scrollRef.current
+    if (!el || sizes.length === 0) return zoomRef.current
+    return fitWithNotes(el.clientWidth - 30, sizes[0].width, margin, []).zoom
+  }
+
+  /** The part of a page and its margins in view, in page units, and the middle of the view. */
+  const viewOf = (page: number): { x0: number; x1: number; cy: number } | null => {
+    const el = scrollRef.current
+    const wrap = el?.querySelector<HTMLElement>(`[data-page="${page}"]`)
+    if (!el || !wrap) return null
+    const w = wrap.getBoundingClientRect()
+    const v = el.getBoundingClientRect()
+    const z = zoomRef.current
+    return { x0: (v.left - w.left) / z - margin, x1: (v.left + el.clientWidth - w.left) / z - margin, cy: (v.top + el.clientHeight / 2 - w.top) / z }
+  }
+
+  /** A rectangle becomes a region, or an equation box when it is drawn round displayed maths. */
+  const makeRegion = (page: number, rect: Rect): Target | null => {
+    if (readOnly || rect[2] < 8 || rect[3] < 8) return null
+    const stamp = new Date().toISOString()
+    const pw = words(page)
+    const inside = pw.filter((w) => pointInRect(rect, w.rect[0] + w.rect[2] / 2, w.rect[1] + w.rect[3] / 2))
+    const target: Target = inside.length && isEquationCircle(inside, pw)
+      ? makeEquationTarget(newId('t'), page, pw, { words: inside, rects: inside.map((w) => w.rect) }, [], stamp)
+      : { id: newId('t'), kind: 'region', page, rects: [rect], style: 'region', createdAt: stamp }
+    addTarget(target, undefined, false)
+    setTool('pen')
+    setPendingRect(null)
+    savePicture(target)
+    return target
+  }
+
+  /** Marks the selected words; returns the mark. */
+  const markPending = (): Target | null => {
+    const s = pendingSelRef.current
+    if (!s || readOnly) return null
+    const pw = words(s.page)
+    const display = readableQuote(pw, s.first, s.last)
+    const target: Target = {
+      id: newId('t'), kind: 'text', page: s.page, quote: buildQuote(pw, s.first, s.last), ...(display ? { display } : {}),
+      rects: rectsForWords(pw.slice(s.first, s.last + 1)), style: 'selection', createdAt: new Date().toISOString()
+    }
+    setPendingSel(null)
+    addTarget(target, undefined, false)
+    return target
+  }
+
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      notify('Copied.')
+    } catch {
+      notify('Could not copy.')
+    }
+  }
+
+  /** Opens the editor for a new typed note. Nothing is saved until it has text. */
+  const startDraft = (page: number, box: Rect, targetIds: string[], how: string, auto: boolean, extra: Partial<Draft> = {}) => {
+    if (readOnly) { notify('A preview cannot be annotated. Add it to the library first.'); return }
+    commitDraft()
+    setSelected('')
+    setPendingSel(null)
+    setPendingRect(null)
+    setDraft({ page, box, fontSize: typedFontSize(defaultZoom(), typedNoteSize), targetIds, text: '', auto, how, ...extra })
+  }
+
+  const newNoteWidth = () => Math.min(TYPED_MAX_WIDTH, Math.max(60, margin - 12))
+
+  /** A new typed note placed beside what it is about, in a margin in view when there is room. */
+  const placeAndStart = (page: number, targetIds: string[], markRects: Rect[] | undefined, how: string, text = '') => {
+    const size = sizes[page]
+    if (!size) return
+    const fs = typedFontSize(defaultZoom(), typedNoteSize)
+    const width = newNoteWidth()
+    const view = viewOf(page)
+    const others = (layerRef.current?.annotations.marginNotes ?? []).filter((n) => n.page === page).map((n) => n.box)
+    const placed = placeNote({
+      pageWidth: size.width, pageHeight: size.height, margin, others, markRects, y: view?.cy, width,
+      height: estimateNoteHeight(text, width, fs, 3), view: view ?? undefined
+    })
+    if (!placed.fits) notify('No room here. Drag the note, or right-click the page and choose Tidy margin.')
+    const el = scrollRef.current
+    const returnTo = placed.outOfView && el ? { left: el.scrollLeft, top: el.scrollTop } : undefined
+    startDraft(page, placed.box, targetIds, how, true, { returnTo, text })
+    if (placed.outOfView) centreOn(page, placed.box[0] + margin + placed.box[2] / 2, placed.box[1] + placed.box[3] / 2)
+  }
+
+  const noteForTarget = (t: Target) => {
+    if (t.page === undefined) return
+    setActive(t.id)
+    placeAndStart(t.page, [t.id], t.rects, 'mark')
+  }
+
+  /** Marks the selection and opens a typed note about it. */
+  const noteForPending = () => {
+    const t = markPending()
+    if (t) noteForTarget(t)
+  }
+
+  /** N: a note about the selection, or the active mark, or about nothing in particular. */
+  const noteFromKeys = () => {
+    if (pendingSelRef.current) { noteForPending(); return }
+    if (pendingRectRef.current) {
+      const r = pendingRectRef.current
+      const t = makeRegion(r.page, r.rect)
+      if (t) noteForTarget(t)
+      return
+    }
+    const t = layerRef.current?.annotations.targets.find((x) => x.id === activeRef.current)
+    if (t && t.rects?.length) { noteForTarget(t); return }
+    placeAndStart(currentPage(), [], undefined, 'keys')
+  }
+
+  /** A typed note at a point: by double-click, or from the right-click menu. */
+  const newNoteAt = (page: number, x: number, y: number, targetIds: string[], how: string, newTarget?: Target) => {
+    const size = sizes[page]
+    if (!size) return
+    const width = newNoteWidth()
+    const fs = typedFontSize(defaultZoom(), typedNoteSize)
+    const h = estimateNoteHeight('', width, fs, 1)
+    const x0 = x < 0 ? Math.max(-margin + 4, Math.min(x, -4 - width)) : Math.min(x, size.width + margin - 4 - width)
+    const y0 = Math.min(Math.max(4, y - h / 2), size.height - h - 4)
+    startDraft(page, [x0, y0, width, h], targetIds, how, false, newTarget ? { newTarget } : {})
+  }
+
+  const openEditor = (n: MarginNote) => {
+    if (readOnly) return
+    if (!isTyped(n)) { setSelected(n.id); setEditingNoteId(n.id); return }
+    commitDraft()
+    setSelected('')
+    setDraft({ page: n.page, box: n.box, fontSize: n.fontSize ?? typedFontSize(defaultZoom(), typedNoteSize), targetIds: n.targetIds, text: n.text, noteId: n.id, auto: false, how: 'edit' })
+  }
+
+  /** Saves the note being typed: Enter, Esc, clicking away. An empty note is never kept. */
+  const commitDraft = () => {
+    const d = draftRef.current
+    if (!d) return
+    setDraft(null)
+    const text = d.text.replace(/\s+$/, '')
+    const stamp = new Date().toISOString()
+    const kind: MarginNote['kind'] = /^\s*[?？]+\s*$/.test(text) ? 'question' : 'note'
+    if (d.noteId) {
+      const old = layerRef.current?.annotations.marginNotes.find((n) => n.id === d.noteId)
+      if (!old) return
+      if (!text.trim()) deleteNote(d.noteId)
+      else if (text !== old.text || d.targetIds.join() !== old.targetIds.join()) {
+        mutate((doc) => {
+          const n = doc.annotations.marginNotes.find((m) => m.id === d.noteId)
+          if (n) Object.assign(n, { text, kind, targetIds: d.targetIds, updatedAt: stamp })
+        })
+        logEvent('note.edit', { note: d.noteId, input: 'typed', chars: text.length, before: old.text.length })
+      }
+    } else if (text.trim()) {
+      const size = sizes[d.page]
+      let box: Rect = [d.box[0], d.box[1], d.box[2], estimateNoteHeight(text, d.box[2], d.fontSize)]
+      // Placed with room for three lines; if the text grew over another note, it is placed again.
+      if (d.auto && size) {
+        const others = (layerRef.current?.annotations.marginNotes ?? []).filter((n) => n.page === d.page).map((n) => n.box)
+        const hits = others.some((o) => o[0] < box[0] + box[2] && box[0] < o[0] + o[2] && o[1] < box[1] + box[3] && box[1] < o[1] + o[3])
+        if (hits) {
+          const marks = (layerRef.current?.annotations.targets ?? []).filter((t) => d.targetIds.includes(t.id)).flatMap((t) => (t.page === d.page ? t.rects ?? [] : []))
+          const again = placeNote({ pageWidth: size.width, pageHeight: size.height, margin, others, markRects: marks, y: box[1], width: box[2], height: box[3] })
+          if (again.fits) box = [again.box[0], again.box[1], box[2], box[3]]
+        }
+      }
+      const id = newId('m')
+      mutate((doc) => {
+        if (d.newTarget) doc.annotations.targets.push(d.newTarget)
+        doc.annotations.marginNotes.push({
+          id, page: d.page, box, strokeIds: [], text, candidates: [], corrected: false, kind,
+          targetIds: d.targetIds, createdAt: stamp, updatedAt: stamp, input: 'typed', fontSize: d.fontSize
+        })
+      })
+      logEvent('note.create', { note: id, input: 'typed', placement: d.how, page: d.page, linked: d.targetIds.length, chars: text.length })
+    }
+    const el = scrollRef.current
+    if (d.returnTo && el) { el.scrollLeft = d.returnTo.left; el.scrollTop = d.returnTo.top }
+    // Nothing stays selected, so the arrow keys go back to turning pages.
+    setSelected('')
+    setActive('')
+  }
+  const commitDraftRef = useRef(commitDraft)
+  commitDraftRef.current = commitDraft
+
+  /** Re-stacks a page's notes in the order of what they are about; one Undo puts them back. */
+  const tidyPage = (page: number) => {
+    const size = sizes[page]
+    const a = layerRef.current?.annotations
+    if (!size || !a) return
+    const moves = tidyMargin(a.marginNotes.filter((n) => n.page === page), a.targets, size.width, size.height)
+    if (moves.size === 0) { notify('The margin is already tidy.'); return }
+    mutate((d) => {
+      for (const n of d.annotations.marginNotes) {
+        const box = moves.get(n.id)
+        if (!box) continue
+        const dy = box[1] - n.box[1]
+        n.box = box
+        const ids = new Set(n.strokeIds)
+        if (ids.size) d.ink.strokes = d.ink.strokes.map((s) => (ids.has(s.id) ? { ...s, points: s.points.map(([x, y, pr, t]) => [x, Math.round((y + dy) * 100) / 100, pr, t] as InkPoint) } : s))
+      }
+    })
+    logEvent('margin.tidy', { page, moved: moves.size })
+  }
+
+  /** Handwriting becomes a typed note with the same text and links; its ink is kept inside the note. */
+  const convertToTyped = (id: string) => {
+    const fs = typedFontSize(defaultZoom(), typedNoteSize)
+    mutate((d) => {
+      const n = d.annotations.marginNotes.find((m) => m.id === id)
+      if (!n || isTyped(n)) return
+      const ids = new Set(n.strokeIds)
+      n.hiddenInk = d.ink.strokes.filter((s) => ids.has(s.id))
+      d.ink.strokes = d.ink.strokes.filter((s) => !ids.has(s.id))
+      n.strokeIds = []
+      n.input = 'typed'
+      n.fontSize = fs
+      const w = Math.max(n.box[2], 60)
+      n.box = [n.box[0], n.box[1], w, estimateNoteHeight(n.text, w, fs)]
+      n.updatedAt = new Date().toISOString()
+    })
+    setSelected('')
+    logEvent('note.convert', { note: id, to: 'typed' })
+  }
+
+  const backToInk = (id: string) => {
+    mutate((d) => {
+      const n = d.annotations.marginNotes.find((m) => m.id === id)
+      if (!n?.hiddenInk?.length) return
+      d.ink.strokes.push(...n.hiddenInk)
+      n.strokeIds = n.hiddenInk.map((s) => s.id)
+      n.box = boxToRect(clusterBox(n.hiddenInk))
+      delete n.hiddenInk
+      delete n.input
+      delete n.fontSize
+      n.updatedAt = new Date().toISOString()
+    })
+    setSelected('')
+    logEvent('note.convert', { note: id, to: 'ink' })
+  }
+
+  const resizeTyped = (id: string, factor: number) => mutate((d) => {
+    const n = d.annotations.marginNotes.find((m) => m.id === id)
+    if (!n || !isTyped(n)) return
+    n.fontSize = Math.round((n.fontSize ?? 10) * factor * 10) / 10
+    n.updatedAt = new Date().toISOString()
+  })
+
+  const noteMenuItems = (n: MarginNote): Menu['items'] => {
+    const common: Menu['items'] = [
+      { label: 'Link…', keys: 'Ctrl+K', testId: 'menu-note-link', run: () => setLinking(n.id) },
+      { label: 'This page', run: () => linkWhole(n.id, 'page', n.page) },
+      { label: 'Whole paper', run: () => linkWhole(n.id, 'paper', n.page) }
+    ]
+    if (isTyped(n)) {
+      return [
+        { label: 'Edit', keys: 'Enter', testId: 'menu-note-edit', run: () => openEditor(n) },
+        ...common,
+        { label: 'Smaller', run: () => resizeTyped(n.id, 1 / 1.15) },
+        { label: 'Larger', run: () => resizeTyped(n.id, 1.15) },
+        { label: 'Copy text', run: () => void copyText(n.text) },
+        ...(n.hiddenInk?.length ? [{ label: 'Back to ink', testId: 'menu-back-to-ink', run: () => backToInk(n.id) }] : []),
+        { label: 'Delete', keys: 'Del', testId: 'menu-note-delete', run: () => deleteNote(n.id) }
+      ]
+    }
+    return [
+      { label: 'Edit text', keys: 'Enter', testId: 'menu-note-edit', run: () => openEditor(n) },
+      ...common,
+      { label: 'Convert to typed note', testId: 'menu-convert-typed', run: () => convertToTyped(n.id) },
+      { label: 'Delete', keys: 'Del', testId: 'menu-note-delete', run: () => deleteNote(n.id) }
+    ]
+  }
+
+  /** A double-click with the mouse: a note to edit, a word to select, or a new typed note on blank space. */
+  const onDoubleClick = (page: number, x: number, y: number) => {
+    const note = noteAt(page, x, y)
+    if (note) { openEditor(note); return }
+    const pw = words(page)
+    const size = sizes[page]
+    const onPage = !!size && x >= 0 && x <= size.width
+    const word = onPage ? wordAt(pw, x, y, 2) : null
+    if (word) {
+      setActive('')
+      setPendingSel({ page, first: word.index, last: word.index })
+      return
+    }
+    if (readOnly) { notify('A preview cannot be annotated. Add it to the library first.'); return }
+    // The first click let go of the active mark; the double-click still links to it.
+    const recent = recentActive.current
+    const linkTo = activeRef.current || (recent && Date.now() - recent.at < 700 ? recent.id : '')
+    recentActive.current = null
+    newNoteAt(page, x, y, linkTo ? [linkTo] : [], 'dblclick')
+  }
+
+  /** Grows or shrinks the active text mark from the keyboard. */
+  const extendActive = (how: 'word+' | 'word-' | 'line+' | 'line-' | 'sentence'): boolean => {
+    const t = layerRef.current?.annotations.targets.find((x) => x.id === activeRef.current)
+    if (!t || t.kind !== 'text' || t.page === undefined) return false
+    const pw = words(t.page)
+    const inside = pw.filter((w) => (t.rects ?? []).some((r) => pointInRect(r, w.rect[0] + w.rect[2] / 2, w.rect[1] + w.rect[3] / 2, 1)))
+    if (!inside.length) return false
+    const first = Math.min(...inside.map((w) => w.index))
+    let last = Math.max(...inside.map((w) => w.index))
+    const lineOf = (i: number) => pw[i].rect[1] + pw[i].rect[3] / 2
+    const sameLine = (i: number, j: number) => Math.abs(lineOf(i) - lineOf(j)) < pw[i].rect[3] * 0.6
+    if (how === 'word+') last = Math.min(pw.length - 1, last + 1)
+    else if (how === 'word-') last = Math.max(first, last - 1)
+    else if (how === 'line+') {
+      let i = last + 1
+      while (i < pw.length && sameLine(i, last)) i++
+      if (i < pw.length) {
+        const start = i
+        while (i + 1 < pw.length && sameLine(i + 1, start)) i++
+        last = i
+      }
+    } else if (how === 'line-') {
+      let i = last
+      while (i > first && sameLine(i - 1, last)) i--
+      last = Math.max(first, i - 1)
+    } else {
+      let i = last
+      while (i < pw.length - 1 && !/[.?!]["”)]?$/.test(pw[i].text)) i++
+      last = i
+    }
+    const display = readableQuote(pw, first, last)
+    mutate((d) => {
+      const x = d.annotations.targets.find((q) => q.id === t.id)
+      if (!x) return
+      x.quote = buildQuote(pw, first, last)
+      x.rects = rectsForWords(pw.slice(first, last + 1))
+      if (display) x.display = display
+      else delete x.display
+    })
+    logEvent('mark', { how: 'keys', extend: how, mark: t.id })
+    return true
+  }
+
   ctl.current = {
     toolRef,
-    penSeen: () => { lastPen.current = Date.now() },
+    penSeen: () => {
+      lastPen.current = Date.now()
+      // A pen in PC mode still writes; the first one in a session offers Pen mode, once.
+      if (pc && !penOffered.current) { penOffered.current = true; setPenOffer(true) }
+    },
     // A finger that writes is never a palm to ignore.
     isPalm: () => inputMode !== 'touch' && Date.now() - lastPen.current < PALM_WINDOW_MS,
     writingRecently: () => inputMode !== 'touch' && Date.now() - lastPen.current < PALM_MENU_MS,
-    touchWrites: () => inputMode === 'touch',
+    // In PC mode a finger only scrolls, zooms and taps, whatever Pen mode's setting says.
+    touchWrites: () => !pc && inputMode === 'touch',
     touchCount: () => touches.current.size,
     beforeStroke: () => {
       if (timer.current) clearTimeout(timer.current)
@@ -1090,9 +1506,10 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       const radius = 5
       const hidden = hiddenStrokes.current
       const hitStrokes = current.ink.strokes.filter((s) => s.page === page && !hidden.has(s.id) && strokeNear(s, x, y, radius))
-      // A typed label can only be rubbed out while it is on show.
-      const note = showTextRef.current && hitStrokes.length === 0
-        ? current.annotations.marginNotes.find((n) => n.page === page && n.kind !== 'drawing' && n.text !== '' && pointInRect(n.box, x, y, 2))
+      // A typed note goes whole; a typed label for handwriting can only be rubbed out while it is on show.
+      const note = hitStrokes.length === 0
+        ? current.annotations.marginNotes.find((n) => n.page === page && pointInRect(n.box, x, y, 2) &&
+          (isTyped(n) || (showTextRef.current && n.kind !== 'drawing' && n.text !== '')))
         : undefined
       const target = targetAt(current.annotations.targets, page, x, y)
       if (!note && !target && hitStrokes.length === 0) return
@@ -1180,14 +1597,7 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       })
       logEvent('note.move', { note: noteId, page, dx: Math.round(dx), dy: Math.round(dy), via: pointerVia() })
     },
-    finishRegion: (page, rect: Rect) => {
-      if (rect[2] < 8 || rect[3] < 8) return
-      const stamp = new Date().toISOString()
-      const target: Target = { id: newId('t'), kind: 'region', page, rects: [rect], style: 'region', createdAt: stamp }
-      addTarget(target)
-      setTool('pen')
-      savePicture(target)
-    },
+    finishRegion: (page, rect: Rect) => { makeRegion(page, rect) },
     setTargetRect: (page, targetId, rect) => {
       let moved: Target | undefined
       mutate((d) => {
@@ -1208,17 +1618,55 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       return rectsForWords(pw.slice(Math.min(s.index, e.index), Math.max(s.index, e.index) + 1))
     },
     finishSelection: (page, a, b) => {
-      if (readOnly) return
       const pw = words(page)
       const s = wordAt(pw, a[0], a[1], 4) ?? nearestWord(pw, a[0], a[1], 12)
       const e = nearestWord(pw, b[0], b[1])
       if (!s || !e) return
-      const first = Math.min(s.index, e.index)
-      const last = Math.max(s.index, e.index)
-      addTarget({
-        id: newId('t'), kind: 'text', page, quote: buildQuote(pw, first, last), ...(readableQuote(pw, first, last) ? { display: readableQuote(pw, first, last) } : {}),
-        rects: rectsForWords(pw.slice(first, last + 1)), style: 'selection', createdAt: new Date().toISOString()
+      // Selected, not marked: the bar offers Mark, Note and Copy, so a bad drag costs nothing.
+      setActive('')
+      setSelected('')
+      setPendingRect(null)
+      setChosen(null)
+      setPendingSel({ page, first: Math.min(s.index, e.index), last: Math.max(s.index, e.index) })
+      logEvent('select.text', { page, words: Math.abs(e.index - s.index) + 1, via: pointerVia() })
+    },
+    noteAt: (page, x, y) => noteAt(page, x, y)?.id ?? '',
+    onText: (page, x, y) => !!(wordAt(words(page), x, y, 3) ?? nearestWord(words(page), x, y, 12)),
+    finishRect: (page, rect, now) => {
+      if (rect[2] < 8 || rect[3] < 8) return
+      if (now) { makeRegion(page, rect); return }
+      setActive('')
+      setSelected('')
+      setPendingSel(null)
+      setPendingRect({ page, rect })
+    },
+    band: (page, rect, add) => {
+      const inside = (r: Rect) => r[0] >= rect[0] - 1 && r[1] >= rect[1] - 1 && r[0] + r[2] <= rect[0] + rect[2] + 1 && r[1] + r[3] <= rect[1] + rect[3] + 1
+      const a = layerRef.current?.annotations
+      const ids = new Set<string>(add && chosenRef.current?.page === page ? chosenRef.current.ids : [])
+      for (const n of a?.marginNotes ?? []) if (n.page === page && inside(n.box)) ids.add(n.id)
+      for (const t of a?.targets ?? []) if (t.page === page && t.rects?.length && t.rects.every(inside)) ids.add(t.id)
+      setActive('')
+      setSelected('')
+      setPendingSel(null)
+      setChosen(ids.size ? { page, ids } : null)
+      logEvent('select.band', { page, items: ids.size })
+    },
+    doubleClick: (page, x, y) => onDoubleClick(page, x, y),
+    setNoteWidth: (page, noteId, x, width) => {
+      mutate((d) => {
+        const n = d.annotations.marginNotes.find((m) => m.id === noteId)
+        if (!n) return
+        n.box = [Math.round(x * 10) / 10, n.box[1], Math.round(width * 10) / 10, n.box[3]]
+        n.updatedAt = new Date().toISOString()
       })
+      logEvent('note.width', { note: noteId, page, width: Math.round(width) })
+    },
+    noteHeight: (noteId, height) => {
+      mutate((d) => {
+        const n = d.annotations.marginNotes.find((m) => m.id === noteId)
+        if (n && Math.abs(n.box[3] - height) > 1) n.box = [n.box[0], n.box[1], n.box[2], height]
+      }, false)
     },
     hover: (page, x, y) => {
       const id = noteAt(page, x, y)?.id ?? ''
@@ -1244,12 +1692,57 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       } else if (link?.url) {
         items.push({ label: 'Open link in browser', run: () => void followLink(link) })
       }
-      if (active?.kind === 'text' && active.quote) {
+      const a = layerRef.current?.annotations
+      const pw = words(page)
+      const sel = pendingSelRef.current
+      const inSel = !!sel && sel.page === page && rectsForWords(pw.slice(sel.first, sel.last + 1)).some((r) => pointInRect(r, x, y, 3))
+      const note = inSel ? undefined : noteAt(page, x, y)
+      const target = inSel || note || !a ? undefined : targetAt(a.targets, page, x, y)
+      const own: Menu['items'] = []
+      // A pen held still opens this menu too; only the mouse, or PC mode, gets the new items, so writing is never interrupted.
+      const desk = pc || pointerVia() === 'mouse'
+      if (!desk) { /* only the link items below */ } else if (inSel && sel) {
+        const quote = buildQuote(pw, sel.first, sel.last).exact
+        if (!readOnly) {
+          own.push({ label: 'Mark', keys: 'H', testId: 'menu-mark', run: () => { markPending() } })
+          own.push({ label: 'Margin note', keys: 'N', testId: 'menu-note', run: () => noteForPending() })
+        }
+        own.push({ label: 'Copy', keys: 'Ctrl+C', testId: 'menu-copy', run: () => void copyText(quote) })
+        if (looksLikeReference(quote)) {
+          own.push({ label: 'Preview as a reference', testId: 'menu-preview-selection', run: () => void lookUpReference(quote) })
+          if (!readOnly) own.push({ label: 'Add to map as a suggestion', testId: 'menu-add-selection-to-map', run: () => addReferenceToMap(quote) })
+        }
+      } else if (note && !readOnly) {
+        setSelected(note.id)
+        setActive('')
+        own.push(...noteMenuItems(note))
+      } else if (target && !readOnly && target.rects?.length) {
+        setActive(target.id)
+        own.push({ label: 'Margin note', keys: 'N', testId: 'menu-mark-note', run: () => noteForTarget(target) })
+        if (target.kind === 'text' && (target.rects?.length ?? 0) > 1) {
+          own.push({ label: 'Remove this line from the mark', testId: 'menu-remove-line', run: () => { mutate((d) => eraseTargetLine(d, target.id, page, x, y)); setActive('') } })
+        }
+        if (target.style === 'equation') {
+          own.push({ label: 'Make it a plain region', testId: 'menu-plain-region', run: () => mutate((d) => { const t = d.annotations.targets.find((q) => q.id === target.id); if (t) { t.style = 'region'; delete t.latex; delete t.equation } }) })
+        }
+        own.push({ label: 'Delete mark', keys: 'Del', testId: 'menu-mark-delete', run: () => { mutate((d) => removeTarget(d, target.id)); setActive('') } })
+      }
+      if (!inSel && active?.kind === 'text' && active.quote && !note) {
         const quote = active.quote.exact
         items.push({ label: 'Preview reference from selected text', testId: 'menu-preview-selection', run: () => void lookUpReference(quote) })
         if (!readOnly) items.push({ label: 'Add selected reference to map', testId: 'menu-add-selection-to-map', run: () => addReferenceToMap(quote) })
       }
-      if (items.length) setMenu({ x: clientX, y: clientY, items })
+      if (desk && !inSel && !note && !target && !link && !readOnly) {
+        const linkTo = activeRef.current
+        own.push({ label: linkTo ? 'New note here, about the marked text' : 'New note here', testId: 'menu-new-note', run: () => newNoteAt(page, x, y, linkTo ? [linkTo] : [], 'menu') })
+        own.push({ label: 'New note about this page', testId: 'menu-new-page-note', run: () => {
+          const t: Target = { id: newId('t'), kind: 'page', page, createdAt: new Date().toISOString() }
+          newNoteAt(page, x, y, [t.id], 'menu-page', t)
+        } })
+        own.push({ label: 'Tidy margin', testId: 'menu-tidy', run: () => tidyPage(page) })
+      }
+      const all = [...own, ...items]
+      if (all.length) setMenu({ x: clientX, y: clientY, items: all })
     },
     touchStart: (e) => {
       if (ctl.current.isPalm()) return
@@ -1275,7 +1768,7 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       if (!prev || ctl.current.isPalm()) return
       const el = scrollRef.current
       // When a finger writes, one finger never scrolls; two fingers do, below.
-      if (touches.current.size === 1 && el && inputMode !== 'touch') {
+      if (touches.current.size === 1 && el && (pc || inputMode !== 'touch')) {
         // Like a browser's PDF viewer: a mostly vertical swipe scrolls straight down, so the page
         // does not drift into the margins. Only a clearly sideways move, or a long one, moves sideways.
         const r = rail.current
@@ -1312,7 +1805,7 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       const wasOne = touches.current.size === 1 && touches.current.has(e.pointerId)
       touches.current.delete(e.pointerId)
       if (touches.current.size < 2) pinch.current = null
-      if (wasOne && !swipe.current.pinched && e.type === 'pointerup' && inputMode !== 'touch') {
+      if (wasOne && !swipe.current.pinched && e.type === 'pointerup' && (pc || inputMode !== 'touch')) {
         const v = startFling(releaseVelocity(swipe.current.samples, e.timeStamp), swipe.current.running)
         if (v) {
           logEvent('touch.fling', { speed: Math.round(Math.hypot(...v) * 100) / 100 })
@@ -1344,6 +1837,13 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
     scaleInk: (...a) => ctl.current.scaleInk(...a),
     selectionPreview: (...a) => ctl.current.selectionPreview(...a),
     finishSelection: (...a) => ctl.current.finishSelection(...a),
+    noteAt: (...a) => ctl.current.noteAt(...a),
+    onText: (...a) => ctl.current.onText(...a),
+    finishRect: (...a) => ctl.current.finishRect(...a),
+    band: (...a) => ctl.current.band(...a),
+    doubleClick: (...a) => ctl.current.doubleClick(...a),
+    setNoteWidth: (...a) => ctl.current.setNoteWidth(...a),
+    noteHeight: (...a) => ctl.current.noteHeight(...a),
     hover: (...a) => ctl.current.hover(...a),
     contextMenu: (...a) => ctl.current.contextMenu(...a),
     writingRecently: () => ctl.current.writingRecently(),
@@ -1471,6 +1971,19 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
     }
   }
 
+  /** Ctrl+Enter in Find: the current match in the text becomes the active mark (or links, while linking). */
+  const markFindMatch = () => {
+    const stop = findStops[findIndex < 0 ? 0 : findIndex]
+    if (!stop || stop.kind !== 'text' || readOnly) return
+    const pw = words(stop.page)
+    const inside = pw.filter((w) => stop.rects.some((r) => pointInRect(r, w.rect[0] + w.rect[2] / 2, w.rect[1] + w.rect[3] / 2, 1)))
+    if (!inside.length) return
+    setPendingSel({ page: stop.page, first: Math.min(...inside.map((w) => w.index)), last: Math.max(...inside.map((w) => w.index)) })
+    markPending()
+    closeFind()
+    logEvent('mark', { how: 'find', page: stop.page })
+  }
+
   /** Next or previous place; before the first step, Previous starts from the last match. */
   const findStep = (dir: 1 | -1) => goToHit(findIndex < 0 ? (dir > 0 ? 0 : -1) : findIndex + dir)
 
@@ -1503,9 +2016,30 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Clicking anywhere outside the note being typed saves it, as Enter does.
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      if (!draftRef.current) return
+      if ((e.target as Element | null)?.closest?.('.typed-editor')) return
+      commitDraftRef.current()
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    return () => window.removeEventListener('pointerdown', onDown, true)
+  }, [])
+
+  // Ctrl+V with a mark active makes a typed note about it from the clipboard; otherwise nothing.
+  const onPasteRef = useRef<(e: ClipboardEvent) => void>(() => undefined)
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => { if (activeTab.current) onPasteRef.current(e) }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [])
+
   const allNotes = layer?.annotations.marginNotes
   const allTargets = layer?.annotations.targets
   const allStrokes = layer?.ink.strokes
+  /** PC mode shows the eraser and Select ink only on papers with handwriting. */
+  const hasInk = (allStrokes?.length ?? 0) > 0
 
   const hiddenStrokes = useRef(new Set<string>())
   const visibleByPage = useMemo(() => {
@@ -1662,7 +2196,23 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       /* the choice just won't be remembered */
     }
   }
+  /** Fits the page and the margins actually used by notes, with a column for new ones. */
+  const fitNotes = () => {
+    const el = scrollRef.current
+    if (!el || sizes.length === 0) return
+    const boxes = (allNotes ?? []).map((n) => n.box)
+    const f = fitWithNotes(el.clientWidth - 30, sizes[0].width, margin, boxes)
+    const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, f.zoom))
+    alignLeft.current = f.left
+    alignRef.current = 'notes'
+    if (Math.abs(z - zoomRef.current) < 0.001) { alignNow(); return }
+    changeZoom(z)
+  }
   const fitNext = () => {
+    if (pc && !readOnly) {
+      if (nextFit === 'page') { fit(false); setNextFit('notes') } else { fitNotes(); setNextFit('page') }
+      return
+    }
     const withMargins = !readOnly && nextFit === 'margins'
     fit(withMargins)
     setNextFit(withMargins ? 'page' : 'margins')
@@ -1687,17 +2237,37 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
     if (top !== null) el.scrollTop = top - 8
   }
 
+  onPasteRef.current = (e: ClipboardEvent) => {
+    const el = e.target as HTMLElement | null
+    if (readOnly || draftRef.current || (el && (/^(INPUT|TEXTAREA)$/.test(el.tagName) || el.isContentEditable))) return
+    const t = layerRef.current?.annotations.targets.find((x) => x.id === activeRef.current)
+    const text = e.clipboardData?.getData('text/plain')?.trim()
+    if (!t || t.page === undefined || !text) return
+    e.preventDefault()
+    placeAndStart(t.page, [t.id], t.rects, 'paste', text)
+  }
+
   onKeyRef.current = (e: KeyboardEvent) => {
     const key = e.key.toLowerCase()
     const done = () => e.preventDefault()
+    // The typed-note editor handles its own keys.
+    if (draftRef.current) return
     if (mod(e) && key === 'f') { done(); openFind(); return }
+    if (mod(e) && key === 'g') {
+      done()
+      if (findOpen) findStep(e.shiftKey ? -1 : 1)
+      else document.querySelector<HTMLInputElement>('[data-testid="page-input"]')?.focus()
+      return
+    }
+    if (!isTyping(e) && (e.key === '?' || e.key === 'F1')) { done(); setShowKeys(true); return }
+    if (e.altKey && !mod(e) && e.key === 'ArrowLeft' && linkBack) { done(); centreOn(linkBack.page, linkBack.x, linkBack.y); setLinkBack(null); return }
     if (e.key === 'F3') {
       done()
       if (!findOpen) openFind()
       else findStep(e.shiftKey ? -1 : 1)
       return
     }
-    if (e.key === 'Escape') { setActive(''); setSelected(''); setLinking(''); setMenu(null); setInkSel(null); closeFind() }
+    if (e.key === 'Escape') { setActive(''); setSelected(''); setLinking(''); setMenu(null); setInkSel(null); closeFind(); setPendingSel(null); setPendingRect(null); setChosen(null); setShowKeys(false); setMoreMenu(false) }
     if (mod(e) && (key === '=' || key === '+')) { done(); changeZoom(zoomRef.current * 1.15); return }
     if (mod(e) && (key === '-' || key === '_')) { done(); changeZoom(zoomRef.current / 1.15); return }
     if (mod(e) && key === '0') { done(); fitNext(); return }
@@ -1707,6 +2277,65 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
     if (!readOnly && mod(e) && key === 'n') { done(); setNewNoteTick((t) => t + 1); return }
     if (!readOnly && mod(e) && key === 'e' && selectedRef.current) { done(); setEditingNoteId(selectedRef.current); return }
     if (!readOnly && mod(e) && key === 'k' && selectedRef.current) { done(); setLinking(selectedRef.current); return }
+    if (mod(e) && key === 'c' && !e.shiftKey) {
+      const s = pendingSelRef.current
+      const n = layerRef.current?.annotations.marginNotes.find((x) => x.id === selectedRef.current)
+      const t = layerRef.current?.annotations.targets.find((x) => x.id === activeRef.current)
+      const text = s ? buildQuote(words(s.page), s.first, s.last).exact : n ? n.text : t?.quote?.exact ?? ''
+      if (text) { done(); void copyText(text) }
+      return
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && chosenRef.current && !readOnly) {
+      done()
+      const ids = chosenRef.current.ids
+      mutate((d) => {
+        for (const id of ids) {
+          if (d.annotations.marginNotes.some((n) => n.id === id)) removeNote(d, id)
+          else removeTarget(d, id)
+        }
+      })
+      logEvent('delete.chosen', { items: ids.size })
+      setChosen(null)
+      return
+    }
+    // Enter or F2 edits the selected note.
+    if (!readOnly && (e.key === 'Enter' || e.key === 'F2') && !mod(e) && selectedRef.current) {
+      const n = layerRef.current?.annotations.marginNotes.find((x) => x.id === selectedRef.current)
+      if (n) { done(); openEditor(n); return }
+    }
+    // Alt+Down / Alt+Up: the next or previous note, in reading order.
+    if (e.altKey && !mod(e) && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      done()
+      const list = [...(layerRef.current?.annotations.marginNotes ?? [])].sort((a, b) => a.page - b.page || a.box[1] - b.box[1] || a.box[0] - b.box[0])
+      if (!list.length) return
+      const at = list.findIndex((n) => n.id === selectedRef.current)
+      const next = at < 0 ? (e.key === 'ArrowDown' ? list.find((n) => n.page >= currentPage()) ?? list[0] : list[list.length - 1]) : list[(at + (e.key === 'ArrowDown' ? 1 : -1) + list.length) % list.length]
+      setActive('')
+      setSelected(next.id)
+      scrollTo(next.page, next.box[1])
+      return
+    }
+    // Arrows nudge a note you clicked; Esc lets go of it and they turn pages again.
+    if (!readOnly && selectedRef.current && !e.altKey && !mod(e) && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      const n = layerRef.current?.annotations.marginNotes.find((x) => x.id === selectedRef.current)
+      if (n) {
+        done()
+        const step = e.shiftKey ? 20 : 2
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
+        ctl.current.moveNote(n.page, n.id, dx, dy)
+        return
+      }
+    }
+    // Shift+arrows and Shift+End grow or shrink the active mark.
+    if (!readOnly && e.shiftKey && !mod(e) && !e.altKey && activeRef.current) {
+      const how = ({ ArrowRight: 'word+', ArrowLeft: 'word-', ArrowDown: 'line+', ArrowUp: 'line-', End: 'sentence' } as const)[e.key as 'ArrowRight']
+      if (how && extendActive(how)) { done(); return }
+    }
+    if (plain(e) && (e.key === ' ' || e.key === 'Spacebar') || (e.shiftKey && !mod(e) && !e.altKey && e.key === ' ')) {
+      const el = scrollRef.current
+      if (el) { done(); el.scrollTop += (e.shiftKey ? -1 : 1) * el.clientHeight * 0.9; return }
+    }
     if ((e.key === 'Delete' || e.key === 'Backspace') && inkSelRef.current && !readOnly) {
       done()
       const sel = inkSelRef.current
@@ -1740,10 +2369,13 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
       if (e.key === 'End') { done(); showPage(offsets.length - 1); return }
     }
     if (!plain(e) || e.shiftKey) return
-    if (!readOnly && key === 'p') setTool('pen')
+    if (!readOnly && key === 'h' && pendingSelRef.current) { done(); markPending(); return }
+    if (!readOnly && key === 'n') { done(); noteFromKeys(); return }
+    if (!readOnly && key === 'v') setTool('pen')
+    else if (!readOnly && key === 'p' && !pc) setTool('pen')
     else if (!readOnly && key === 'r') setTool('region')
-    else if (!readOnly && key === 'e') setTool('eraser')
-    else if (!readOnly && key === 's') setTool('select')
+    else if (!readOnly && key === 'e' && (!pc || hasInk)) setTool('eraser')
+    else if (!readOnly && key === 's' && (!pc || hasInk)) setTool('select')
     else if (!readOnly && key === 't') toggleText()
     else if (!readOnly && key === 'l') toggleLinks()
   }
@@ -1779,7 +2411,46 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
           }} />
       )}
       <div className="toolbar">
-        {!readOnly && (
+        {!readOnly && pc && (
+          <>
+            <div className="tool-group" data-testid="pc-tools">
+              <button className={tool === 'pen' ? 'on' : ''} data-testid="tool-select-pc" onClick={() => setTool('pen')}
+                title="Select (V): drag over text to select it, over a figure to draw a box, from the margin to choose notes">Select</button>
+              <button className={tool === 'region' ? 'on' : ''} data-testid="tool-region" onClick={() => setTool('region')}
+                title="Region (R): drag round a figure, table or equation">Region</button>
+              {hasInk && (
+                <>
+                  <button className={tool === 'select' ? 'on' : ''} data-testid="tool-select" onClick={() => setTool('select')}
+                    title="Select ink (S): draw a loop round handwriting, then drag it">Select ink</button>
+                  <button className={tool === 'eraser' ? 'on' : ''} data-testid="tool-eraser" onClick={() => setTool('eraser')}
+                    title="Eraser (E): rubs out handwriting and marks">Eraser</button>
+                </>
+              )}
+            </div>
+            <div className="tool-group">
+              <button data-testid="mark-button" disabled={!pendingSel} title={pendingSel ? 'Mark the selected text (H)' : 'Select text first'}
+                onClick={() => markPending()}>Mark</button>
+              <button data-testid="note-button" title="Margin note (N): about the selection or the active mark, or about nothing in particular"
+                onClick={() => noteFromKeys()}>Margin note</button>
+            </div>
+            <div className="tool-group" data-testid="note-sizes" title="Text size of typed notes: new ones, or the selected one">
+              {(['S', 'M', 'L'] as const).map((s) => (
+                <button key={s} className={typedNoteSize === s ? 'on size-btn' : 'size-btn'} data-testid={`note-size-${s}`}
+                  title={{ S: 'Small text', M: 'Medium text', L: 'Large text' }[s]}
+                  onClick={() => {
+                    const n = allNotes?.find((x) => x.id === selectedNoteId)
+                    if (n && isTyped(n)) {
+                      const base = typedFontSize(defaultZoom(), 'M')
+                      mutate((d) => { const m = d.annotations.marginNotes.find((x) => x.id === n.id); if (m) m.fontSize = Math.round(base * TYPED_SIZE_FACTOR[s] * 10) / 10 })
+                    }
+                    onTypedNoteSize(s)
+                    logEvent('note.size', { size: s })
+                  }}>{s}</button>
+              ))}
+            </div>
+          </>
+        )}
+        {!readOnly && !pc && (
           <div className="tool-group">
             {(['pen', 'region', 'eraser', 'select'] as Tool[]).map((t) => (
               <button key={t} className={tool === t ? 'on' : ''} data-testid={`tool-${t}`} onClick={() => setTool(t)}
@@ -1789,7 +2460,7 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
             ))}
           </div>
         )}
-        {!readOnly && tool === 'pen' && (
+        {!readOnly && !pc && tool === 'pen' && (
           <div className="tool-group pen-sizes" data-testid="pen-sizes">
             {PEN_SIZES.map((p, i) => (
               <button key={p.name} className={penSize === i ? 'on' : ''} data-testid={`pen-size-${i}`} title={`${p.name} pen`}
@@ -1809,7 +2480,7 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
             <button disabled={!canRedo} onClick={redo} data-testid="redo">Redo</button>
           </div>
         )}
-        {!readOnly && (
+        {!readOnly && (!pc || hasInk) && (
           <button
             className={showText ? 'on' : ''}
             data-testid="toggle-text"
@@ -1868,10 +2539,21 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
             title="Switches between fitting the page and fitting the page with its writing margins (Ctrl+0)"
             onClick={fitNext}
           >
-            {readOnly || nextFit === 'page' ? 'Fit page' : 'Fit with margins'}
+            {readOnly || nextFit === 'page' ? 'Fit page' : nextFit === 'notes' ? 'Fit page + notes' : 'Fit with margins'}
           </button>
         </div>
-        <button
+        {pc && (
+          <div className="tool-group more-group">
+            <button data-testid="more-menu" title="More: Tidy margin, keyboard shortcuts" onClick={() => setMoreMenu((v) => !v)}>⋯</button>
+            {moreMenu && (
+              <div className="context-menu more-menu" data-testid="more-menu-list">
+                {!readOnly && <button data-testid="more-tidy" onClick={() => { setMoreMenu(false); tidyPage(currentPage()) }}>Tidy margin on this page</button>}
+                <button data-testid="more-keys" onClick={() => { setMoreMenu(false); setShowKeys(true) }}>Keyboard shortcuts<kbd>?</kbd></button>
+              </div>
+            )}
+          </div>
+        )}
+        {!pc && <button
           className={scrollLocked ? 'on' : ''}
           data-testid="scroll-lock"
           title="Lock the scrollbar, so a hand resting on it can't jump pages. Fingers still scroll."
@@ -1883,7 +2565,7 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
           }}
         >
           {scrollLocked ? 'Scrollbar locked' : 'Lock scrollbar'}
-        </button>
+        </button>}
         <div className="spacer" />
         {!readOnly && <PanelToggle side="right" open={paneOpen} label="notes" testId="notes-toggle" onClick={() => setPaneOpen((v) => !v)} />}
       </div>
@@ -1900,6 +2582,22 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
           <button data-testid="linking-cancel" onClick={() => setLinking('')}>Cancel</button>
         </div>
       )}
+      {pc && pcStrip && !readOnly && (
+        <div className="pc-strip" data-testid="pc-strip">
+          <span>{sizes.length && !pageData.current.get(0)?.words.length ? 'Drag to mark an area' : 'Select text to mark it'} · Double-click the margin for a note · Right-click anything · Press ? for all keys</span>
+          <span className="spacer" />
+          <button data-testid="pc-strip-close" onClick={() => { setPcStrip(false); store(PC_STRIP_KEY, '1') }}>Got it</button>
+        </div>
+      )}
+      {penOffer && (
+        <div className="info-banner" data-testid="pen-offer">
+          <span>A pen was used. Switch to Pen mode, where you write your notes by hand?</span>
+          <span>
+            <button className="primary" data-testid="pen-offer-switch" onClick={() => { setPenOffer(false); onSwitchMode('pen') }}>Switch</button>{' '}
+            <button data-testid="pen-offer-dismiss" onClick={() => setPenOffer(false)}>Not now</button>
+          </span>
+        </div>
+      )}
       {recognizerProblem && <div className="warn-banner" data-testid="recognizer-problem">Your ink is saved, but it could not be turned into text: {recognizerProblem}</div>}
 
       <div className="reader-body">
@@ -1913,7 +2611,8 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
               title="Enter: next · Shift+Enter: previous · Esc: close"
               onChange={(e) => setFindQuery(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); findStep(e.shiftKey ? -1 : 1) }
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); markFindMatch() }
+                else if (e.key === 'Enter') { e.preventDefault(); findStep(e.shiftKey ? -1 : 1) }
               }}
             />
             <label className="find-check" title="Go through matches in the printed text">
@@ -1982,6 +2681,17 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
             }, 600)
             // Moving around mid-sentence is not the end of the writing.
             if (pending.current.length) schedule()
+            // In PC mode a mark stops being the one new notes link to once it is a screen or more away.
+            if (pc && activeRef.current && scrollRef.current) {
+              const el = scrollRef.current
+              const t = layerRef.current?.annotations.targets.find((x) => x.id === activeRef.current)
+              const wrap = t?.page !== undefined ? el.querySelector<HTMLElement>(`[data-page="${t.page}"]`) : null
+              const r = t?.rects?.[0]
+              if (wrap && r) {
+                const top = wrap.getBoundingClientRect().top + r[1] * zoomRef.current - el.getBoundingClientRect().top
+                if (top < -el.clientHeight || top > el.clientHeight * 2) setActive('')
+              }
+            }
           }}
         >
           {loadError && <div className="load-error">{loadError}</div>}
@@ -2008,14 +2718,46 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
                 selectedNoteId={selectedNoteId}
                 inkSelection={inkSel && inkSel.page === i ? inkSel.ids : null}
                 connectFrom={connectNote && connectNote.page === i ? connectNote : null}
+                pendingRects={pendingSel && pendingSel.page === i ? rectsForWords(words(i).slice(pendingSel.first, pendingSel.last + 1)) : null}
+                pendingRect={pendingRect && pendingRect.page === i ? pendingRect.rect : null}
+                chosenIds={chosen && chosen.page === i ? chosen.ids : null}
+                editingNoteId={draft?.page === i ? draft.noteId ?? '' : ''}
                 flashTargetId={flashTargetId}
                 flashRects={linkFlash?.byPage.get(i) ?? null}
                 flashKey={linkFlash?.key ?? 0}
                 readOnly={readOnly}
                 ctl={stableCtl.current}
               >
-                {menuTarget && menuTarget.page === i && (
-                  <TargetMenu
+                {pendingSel && pendingSel.page === i && !readOnly && (() => {
+                  const rects = rectsForWords(words(i).slice(pendingSel.first, pendingSel.last + 1))
+                  if (!rects.length) return null
+                  const quote = buildQuote(words(i), pendingSel.first, pendingSel.last).exact
+                  const bottom = Math.max(...rects.map((r) => r[1] + r[3]))
+                  const left = Math.min(...rects.map((r) => r[0]))
+                  return (
+                    <ActionBar left={(left + margin) * zoom} top={bottom * zoom + 6} anchorHeight={(bottom - Math.min(...rects.map((r) => r[1]))) * zoom} testId="selection-bar">
+                      <button data-testid="sel-mark" onClick={() => markPending()}>Mark<kbd>H</kbd></button>
+                      <button data-testid="sel-note" onClick={() => noteForPending()}>Note<kbd>N</kbd></button>
+                      <button data-testid="sel-copy" onClick={() => { setPendingSel(null); void copyText(quote) }}>Copy<kbd>Ctrl+C</kbd></button>
+                      {looksLikeReference(quote) && <button data-testid="sel-preview" onClick={() => { setPendingSel(null); void lookUpReference(quote) }}>Preview as a reference</button>}
+                      {looksLikeReference(quote) && <button data-testid="sel-add-to-map" onClick={() => { setPendingSel(null); addReferenceToMap(quote) }}>Add to map</button>}
+                    </ActionBar>
+                  )
+                })()}
+                {pendingRect && pendingRect.page === i && !readOnly && (
+                  <ActionBar left={(pendingRect.rect[0] + margin) * zoom} top={(pendingRect.rect[1] + pendingRect.rect[3]) * zoom + 6} anchorHeight={pendingRect.rect[3] * zoom} testId="rect-bar">
+                    <button data-testid="rect-region" onClick={() => makeRegion(i, pendingRect.rect)}>Region</button>
+                    <button data-testid="rect-note" onClick={() => { const t = makeRegion(i, pendingRect.rect); if (t) noteForTarget(t) }}>Note<kbd>N</kbd></button>
+                    <button data-testid="rect-cancel" onClick={() => setPendingRect(null)}>Cancel</button>
+                  </ActionBar>
+                )}
+                {draft && draft.page === i && (
+                  <TypedEditor draft={draft} zoom={zoom} margin={margin} targets={allTargets ?? []}
+                    onChange={(text) => setDraft({ ...draft, text })}
+                    onUnlink={(id) => setDraft({ ...draft, targetIds: draft.targetIds.filter((x) => x !== id) })}
+                    onCommit={() => commitDraft()} />
+                )}
+                {menuTarget && menuTarget.page === i && (                  <TargetMenu
                     target={menuTarget}
                     margin={margin}
                     zoom={zoom}
@@ -2058,7 +2800,7 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
                     }}
                   />
                 )}
-                {selectedNote && selectedNote.page === i && (
+                {selectedNote && selectedNote.page === i && !draft && (
                   <NoteMenu
                     note={selectedNote}
                     margin={margin}
@@ -2080,6 +2822,9 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
                     })}
                     onKind={(kind) => updateNote(selectedNote.id, { kind })}
                     onLink={() => setLinking(selectedNote.id)}
+                    onEditTyped={() => openEditor(selectedNote)}
+                    onConvert={() => convertToTyped(selectedNote.id)}
+                    onBackToInk={() => backToInk(selectedNote.id)}
                     onLinkPage={() => linkWhole(selectedNote.id, 'page', selectedNote.page)}
                     onLinkPaper={() => linkWhole(selectedNote.id, 'paper', selectedNote.page)}
                     onUnlink={(id) => updateNote(selectedNote.id, { targetIds: selectedNote.targetIds.filter((x) => x !== id) })}
@@ -2129,11 +2874,12 @@ export function Reader({ source, active, marginShare, inputMode, mathLayout, onL
           <div className="context-menu" data-testid="context-menu"
             style={{ left: Math.min(menu.x, window.innerWidth - 250), top: Math.min(menu.y, window.innerHeight - 40 * menu.items.length - 20) }}>
             {menu.items.map((item) => (
-              <button key={item.label} data-testid={item.testId} onClick={() => { setMenu(null); item.run() }}>{item.label}</button>
+              <button key={item.label} data-testid={item.testId} onClick={() => { setMenu(null); item.run() }}>{item.label}{item.keys && <kbd>{item.keys}</kbd>}</button>
             ))}
           </div>
         </>
       )}
+      {showKeys && <KeySheet pc={pc} onClose={() => setShowKeys(false)} />}
       <span hidden data-schema={SCHEMA_VERSION} />
     </div>
   )
@@ -2156,6 +2902,9 @@ function groupBy<T>(items: T[], key: (t: T) => number): Map<number, T[]> {
 }
 
 interface NoteMenuProps {
+  onEditTyped: () => void
+  onConvert: () => void
+  onBackToInk: () => void
   note: MarginNote
   margin: number
   zoom: number
@@ -2298,6 +3047,16 @@ function NoteMenu(p: NoteMenuProps) {
           <button className="primary" data-testid="note-save-text" onClick={() => p.onSaveText(text)}>Save</button>
           <button onClick={p.onCancelEdit}>Cancel</button>
         </div>
+      ) : isTyped(p.note) ? (
+        <div className="menu-row">
+          <span className="menu-hint">Drag to move it, a side to change its width · double-click or Enter to edit</span>
+          <button data-testid="note-edit-open" onClick={p.onEditTyped}>Edit</button>
+          <button data-testid="note-link" onClick={p.onLink}>Link…</button>
+          <button onClick={p.onLinkPage}>This page</button>
+          <button onClick={p.onLinkPaper}>Whole paper</button>
+          {p.note.hiddenInk?.length ? <button data-testid="note-back-to-ink" onClick={p.onBackToInk}>Back to ink</button> : null}
+          <button data-testid="note-delete" onClick={p.onDelete}>Delete note</button>
+        </div>
       ) : (
         <div className="menu-row">
           <div className="menu-text" data-testid="note-transcription">{p.note.text || 'Not recognized yet'}</div>
@@ -2307,6 +3066,7 @@ function NoteMenu(p: NoteMenuProps) {
           <button data-testid="note-link" onClick={p.onLink}>Link…</button>
           <button onClick={p.onLinkPage}>This page</button>
           <button onClick={p.onLinkPaper}>Whole paper</button>
+          <button data-testid="note-convert" title="Make it a typed note with the same text and links; the ink is kept and can come back" onClick={p.onConvert}>Convert to typed</button>
           <button data-testid="note-delete" onClick={p.onDelete}>Delete note</button>
         </div>
       )}
@@ -2340,6 +3100,133 @@ function NoteMenu(p: NoteMenuProps) {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+/** A small bar of actions under a selection or a dragged box, kept inside the view. */
+function ActionBar({ left, top, anchorHeight, testId, children }: { left: number; top: number; anchorHeight: number; testId: string; children: React.ReactNode }) {
+  const kept = useKeptInView(anchorHeight)
+  return (
+    <div ref={kept.ref} className="sel-bar" data-testid={testId} style={{ left, top, ...kept.style }}
+      onPointerDown={(e) => e.stopPropagation()}>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * The editor for a typed note, in the note's place. Enter saves, Shift+Enter starts a new line,
+ * Esc or a click elsewhere also saves; Ctrl+Z right after takes the whole edit back.
+ */
+function TypedEditor({ draft, zoom, margin, targets, onChange, onUnlink, onCommit }: {
+  draft: { box: Rect; fontSize: number; text: string; targetIds: string[]; noteId?: string }
+  zoom: number
+  margin: number
+  targets: Target[]
+  onChange: (text: string) => void
+  onUnlink: (id: string) => void
+  onCommit: () => void
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+  // Never drawn smaller than 13 px while typing, so it is readable at any zoom.
+  const px = Math.max(13, draft.fontSize * zoom)
+  const width = Math.max(draft.box[2] * zoom * (px / (draft.fontSize * zoom)), 170)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight + 2}px`
+  }, [draft.text, px, width])
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [])
+  const linked = draft.targetIds.map((id) => targets.find((t) => t.id === id)).filter((t): t is Target => !!t)
+  const describe = (t: Target) => {
+    const where = t.page !== undefined ? ` (p. ${t.page + 1})` : ''
+    if (t.kind === 'text') return `“${shortenMath(t.display ?? t.quote?.exact ?? '', 40)}”${where}`
+    return targetLabel(t, true)
+  }
+  return (
+    <div className="typed-editor" data-testid="typed-editor" style={{ left: (draft.box[0] + margin) * zoom, top: draft.box[1] * zoom - 22 }}
+      onPointerDown={(e) => e.stopPropagation()}>
+      {linked.length ? linked.map((t) => (
+        <span key={t.id} className="typed-chip" data-testid="typed-chip">
+          Linked to <MathText text={describe(t)} />
+          <button title="Unlink" data-testid="typed-chip-unlink" onClick={() => onUnlink(t.id)}>×</button>
+        </span>
+      )) : (
+        <span className="typed-chip none" data-testid="typed-chip-none">No target{draft.noteId ? ' · Link… (Ctrl+K after saving)' : ''}</span>
+      )}
+      <textarea ref={ref} value={draft.text} data-testid="typed-input" spellCheck
+        placeholder="Type your note…" style={{ fontSize: px, width }}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          e.stopPropagation()
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onCommit() }
+          else if (e.key === 'Escape') { e.preventDefault(); onCommit() }
+        }} />
+      <span className="typed-hint">Enter saves · Shift+Enter new line · $x^2$ for maths</span>
+    </div>
+  )
+}
+
+/** Every key and mouse action, from ? or F1. */
+function KeySheet({ pc, onClose }: { pc: boolean; onClose: () => void }) {
+  const rows: [string, [string, string][]][] = [
+    ['Mouse on a page', [
+      ['Drag over text', 'Select it: then Mark, Note or Copy'],
+      ['Double-click a word', 'Select the word'],
+      ['Drag over a figure or blank paper; Alt+drag; R then drag', 'A box: Region, or an equation box round displayed maths'],
+      ['Drag from the margin; Shift+drag', 'Choose the notes and marks inside'],
+      ['Double-click the margin or blank paper', 'New typed note there, linked to the active mark'],
+      ['Click a note / a mark / a citation', 'Select it / make it active / its menu'],
+      ['Double-click a note', 'Edit it'],
+      ['Drag a note; drag its side', 'Move it; change its width'],
+      ['Right-click anything', 'Its menu, with keys'],
+      ['Wheel, Shift+wheel, Ctrl+wheel', 'Scroll, sideways, zoom']
+    ]],
+    ['Notes and marks', [
+      ['H', 'Mark the selection'],
+      ['N', 'Margin note: about the selection or active mark, or about nothing'],
+      ['Enter, F2', 'Edit the selected note'],
+      ['In a note: Enter / Shift+Enter / Esc', 'Save / new line / save and close (Ctrl+Z takes it back)'],
+      ['Ctrl+K', 'Link the selected note'],
+      ['Delete', 'Delete what is selected'],
+      ['Alt+↓ / Alt+↑', 'Next / previous note'],
+      ['Arrows, Shift+arrows', 'Move a clicked note (Esc lets go)'],
+      ['Shift+→ ← / Shift+↓ ↑ / Shift+End', 'Grow or shrink the active mark by a word / a line / to the end of the sentence'],
+      ['Ctrl+C / Ctrl+V', 'Copy / paste as a note about the active mark'],
+      ['Ctrl+Z / Ctrl+Y', 'Undo / Redo']
+    ]],
+    ['Moving around', [
+      ['Space / Shift+Space, PageDown/PageUp', 'Screen down / up'],
+      ['→ ←, Home, End', 'Next / previous page, first, last'],
+      ['Ctrl+= / Ctrl+− / Ctrl+0', pc ? 'Zoom in, out, Fit page + notes ↔ Fit page' : 'Zoom in, out, Fit'],
+      ['Ctrl+G', 'Go to a page (next match while Find is open)'],
+      ['Ctrl+F, Enter, Shift+Enter, Ctrl+Enter', 'Find, next, previous, mark the match'],
+      ['Alt+←', 'Back after following a link'],
+      ['T / L', 'Typed text for handwriting / links, on or off'],
+      ['V / R / S / E', pc ? 'Select / Region / Select ink / Eraser (the last two on papers with handwriting)' : 'Select / Region / Select ink / Eraser; P: Pen'],
+      ['Ctrl+N / Ctrl+W / Ctrl+Tab', 'Side note / close the tab / next tab'],
+      ['? or F1', 'This list']
+    ]]
+  ]
+  return (
+    <div className="modal-back" onPointerDown={onClose}>
+      <div className="modal key-sheet" data-testid="key-sheet" onPointerDown={(e) => e.stopPropagation()}>
+        <h3>Keys and mouse</h3>
+        {rows.map(([title, list]) => (
+          <div key={title}>
+            <h4>{title}</h4>
+            <table><tbody>{list.map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}</tbody></table>
+          </div>
+        ))}
+        <div className="modal-actions"><button className="primary" onClick={onClose}>Close</button></div>
+      </div>
     </div>
   )
 }

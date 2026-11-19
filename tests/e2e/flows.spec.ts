@@ -86,8 +86,9 @@ test.describe('side notes', () => {
     await expect(block).toHaveClass(/wrap/)
     const sizes = () => rendered.evaluate((el) => {
       const b = el.querySelector('[data-testid="math-block"]') as HTMLElement
-      const sub = el.querySelector('p .msupsub') as HTMLElement
-      const base = sub?.closest('.mord')?.firstElementChild as HTMLElement
+      // The subscript letter itself: the subscript box is as tall as the line.
+      const sub = el.querySelector('p .msupsub .mtight') as HTMLElement
+      const base = sub?.closest('.msupsub')?.parentElement?.firstElementChild as HTMLElement
       return {
         noteScroll: el.scrollWidth - el.clientWidth, blockScroll: b.scrollWidth - b.clientWidth, blockHeight: b.clientHeight,
         // A subscript sits below the letter it belongs to.
@@ -329,7 +330,8 @@ test.describe('citations', () => {
     }, id)
     await run.page.getByTestId('nav-map').click()
     await expect(run.page.getByTestId('map-node')).toHaveCount(1)
-    await run.page.getByTestId('map-node').click()
+    // A mouse click selects a paper on a map; a double-click opens it.
+    await run.page.getByTestId('map-node').dblclick()
     await run.page.waitForSelector('[data-testid="pdf-0"][data-rendered]')
     await run.page.waitForTimeout(300)
     await rightClick(run.page, 0, links.ref1)
@@ -508,7 +510,8 @@ test.describe('reading maps', () => {
       await window.api.saveMap({ ...m, nodes: [{ paperId: id }] })
     }, id)
     await run.page.getByTestId('nav-map').click()
-    await run.page.getByTestId('map-node').click()
+    // A mouse click selects a paper on a map; a double-click opens it.
+    await run.page.getByTestId('map-node').dblclick()
     await run.page.waitForSelector('[data-testid="pdf-0"][data-rendered]')
     await run.page.waitForTimeout(300)
     await rightClick(run.page, 0, links.ref1)

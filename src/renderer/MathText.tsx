@@ -1,9 +1,11 @@
 import { memo } from 'react'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
+import { splitDollarMath } from '../shared/typedNotes'
 
 /** Splits text into plain parts and $…$ maths parts. */
-function pieces(text: string): { math: boolean; text: string }[] {
+function pieces(text: string, pandoc = false): { math: boolean; text: string }[] {
+  if (pandoc) return splitDollarMath(text)
   const out: { math: boolean; text: string }[] = []
   const re = /\$([^$]+)\$/g
   let last = 0
@@ -16,11 +18,14 @@ function pieces(text: string): { math: boolean; text: string }[] {
   return out
 }
 
-/** Text with $…$ maths rendered as typeset maths, as side notes show it. */
-export const MathText = memo(function MathText({ text, className }: { text: string; className?: string }) {
+/**
+ * Text with $…$ maths rendered as typeset maths, as side notes show it. `pandoc` uses the stricter
+ * rule for typed notes, where "$5 and $10" stays text.
+ */
+export const MathText = memo(function MathText({ text, className, pandoc }: { text: string; className?: string; pandoc?: boolean }) {
   return (
     <span className={className}>
-      {pieces(text).map((p, i) => {
+      {pieces(text, pandoc).map((p, i) => {
         if (!p.math) return <span key={i}>{p.text}</span>
         let html = ''
         try {

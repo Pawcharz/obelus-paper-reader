@@ -1,12 +1,12 @@
 {
   "name": "paper-reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A pen-first reader for research papers: handwritten margin notes become text linked to what they refer to, kept as plain files. For Windows and Linux.",
+  "description": "A reader for research papers, pen first: margin notes, handwritten or typed, are linked to what they refer to and kept as plain files. For Windows and Linux.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Pawcharz/paper-reader.git"
+    "url": "https://github.com/Pawcharz/obelus-paper-reader.git"
   },
   "main": "out/main/index.js",
   "scripts": {

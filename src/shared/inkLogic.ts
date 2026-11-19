@@ -425,7 +425,7 @@ export function findNearbyNotes(cluster: Stroke[], notes: MarginNote[]): MarginN
   const h = Math.max(medianHeight(cluster), 5)
   const zone = inflate(box, Math.max(14, h * 3.5), Math.max(6, h * 1.2))
   return notes.filter(
-    (n) => n.page === cluster[0].page && !n.corrected && n.kind !== 'drawing' && intersects(zone, rectToBox(n.box))
+    (n) => n.page === cluster[0].page && !n.corrected && n.kind !== 'drawing' && n.input !== 'typed' && intersects(zone, rectToBox(n.box))
   )
 }
 
@@ -464,7 +464,8 @@ export function noteToJoin(
   const cy = (c.y0 + c.y1) / 2
   let best: { note: MarginNote; score: number } | undefined
   for (const n of notes) {
-    if (n.page !== cluster[0].page || n.corrected || n.kind === 'drawing') continue
+    // Ink never joins a typed note.
+    if (n.page !== cluster[0].page || n.corrected || n.kind === 'drawing' || n.input === 'typed') continue
     const b = rectToBox(n.box)
     const own = n.strokeIds.map(strokeOf).filter((s): s is Stroke => !!s)
     const L = own.length ? lineHeight(own) : Math.max(n.box[3], 8)

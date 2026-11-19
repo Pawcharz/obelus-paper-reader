@@ -1,5 +1,7 @@
 import { memo, ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { InkPoint, MarginNote, Rect, Stroke, Target } from '../../shared/types'
+import { InkPoint, MarginNote, Rect, Stroke, Target, isTyped } from '../../shared/types'
+import { MathText } from '../MathText'
+import { TYPED_LINE } from '../../shared/typedNotes'
 import { PdfDoc, PageSize } from './pdf'
 import { adjustRegion, joinLines } from '../../shared/markShape'
 
@@ -45,7 +47,22 @@ export interface PageController {
   /** The selected ink, or a note, made larger or smaller by this factor about the anchor point. */
   scaleInk(page: number, ids: ReadonlySet<string>, factor: number, anchor?: [number, number]): void
   selectionPreview(page: number, a: [number, number], b: [number, number]): Rect[]
-  finishSelection(page: number, a: [number, number], b: [number, number]): void
+  /** A mouse drag over text: the words become a selection, marked only when an action is chosen. */
+  finishSelection(page: number, a: [number, number], b: [number, number], clientX: number, clientY: number): void
+  /** The note under a point, or ''. */
+  noteAt(page: number, x: number, y: number): string
+  /** Whether a point is on or close to printed words, where a mouse drag selects text. */
+  onText(page: number, x: number, y: number): boolean
+  /** A rectangle dragged with the mouse over no text. `now`: make the region at once (Region tool, Alt+drag). */
+  finishRect(page: number, rect: Rect, now: boolean, clientX: number, clientY: number): void
+  /** A rubber band, from a margin or with Shift: chooses the notes and marks fully inside it. */
+  band(page: number, rect: Rect, add: boolean): void
+  /** A mouse double-click: a word, a note to edit, or a new typed note on blank space. */
+  doubleClick(page: number, x: number, y: number): void
+  /** A typed note's new left edge and width, from dragging its side. */
+  setNoteWidth(page: number, noteId: string, x: number, width: number): void
+  /** A typed note's drawn height, so the stored box and hit tests follow its text. */
+  noteHeight(noteId: string, height: number): void
   hover(page: number, x: number, y: number): void
   contextMenu(page: number, x: number, y: number, clientX: number, clientY: number): void
   touchStart(e: React.PointerEvent): void
@@ -86,6 +103,14 @@ interface Props {
   wholePaperIds: ReadonlySet<string>
   /** Ink chosen with Select ink on this page. */
   inkSelection: ReadonlySet<string> | null
+  /** Selected words not yet marked, shown blue. */
+  pendingRects: Rect[] | null
+  /** A dragged rectangle not yet made into anything, with its own bar. */
+  pendingRect: Rect | null
+  /** Notes and marks chosen together with a rubber band. */
+  chosenIds: ReadonlySet<string> | null
+  /** A typed note being edited is hidden: its editor sits in its place. */
+  editingNoteId: string
   ctl: PageController
   children?: ReactNode
 }
@@ -238,13 +263,18 @@ export const PageView = memo(function PageView(p: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const drawn = useRef<{ key: string; list: Stroke[] }>({ key: '', list: [] })
   const current = useRef<{
-    mode: 'pen' | 'erase' | 'region' | 'select' | 'lasso' | 'moveInk'
+    mode: 'pen' | 'erase' | 'region' | 'select' | 'lasso' | 'moveInk' | 'rect' | 'band' | 'moveNote'
+    /** For moveNote: the note pressed on. */
+    noteId?: string
+    alt?: boolean
+    shift?: boolean
     points: InkPoint[]
     start: number
     id: number
     lastClient: LivePoint
   } | null>(null)
   const [regionRect, setRegionRect] = useState<Rect | null>(null)
+  const [bandRect, setBandRect] = useState<Rect | null>(null)
   const [selRects, setSelRects] = useState<Rect[]>([])
   const wrapW = (size.width + margin * 2) * zoom
   const wrapH = size.height * zoom
@@ -455,7 +485,11 @@ export const PageView = memo(function PageView(p: Props) {
     return [round(x), round(y), Math.round(pressureOf(e) * 100) / 100, Math.round(e.timeStamp - start)]
   }
 
+  /** What pressed last, so a pen double-tap (a colon, say) never counts as a mouse double-click. */
+  const lastPointer = useRef('')
+
   function onPointerDown(e: React.PointerEvent): void {
+    lastPointer.current = e.pointerType
     if (e.pointerType === 'touch') {
       ctl.touchStart(e)
       if (!ctl.touchWrites()) return
@@ -481,16 +515,30 @@ export const PageView = memo(function PageView(p: Props) {
     }
     const tool = ctl.toolRef.current
     const erasing = tool === 'eraser' || e.button === 5 || (e.buttons & 32) !== 0
-    let mode: 'pen' | 'erase' | 'region' | 'select' | 'lasso' | 'moveInk' = 'select'
+    let mode: 'pen' | 'erase' | 'region' | 'select' | 'lasso' | 'moveInk' | 'rect' | 'band' | 'moveNote' = 'select'
     const [px, py] = toPage(e.clientX, e.clientY)
+    const mouse = e.pointerType === 'mouse'
+    let pressedNote = ''
     if (erasing) mode = 'erase'
-    else if (tool === 'region') mode = 'region'
+    else if (tool === 'region' || (mouse && e.altKey && tool === 'pen')) mode = 'region'
+    // The mouse never writes. What a drag does depends on where it starts, as the cursor shows.
+    else if (mouse && tool === 'pen') {
+      pressedNote = ctl.noteAt(index, px, py)
+      if (e.shiftKey) mode = 'band'
+      else if (pressedNote && !p.readOnly) mode = 'moveNote'
+      else if (px < 0 || px > size.width) mode = 'band'
+      else if (ctl.onText(index, px, py)) mode = 'select'
+      else mode = 'rect'
+    }
     // With Select ink, pressing inside the selection drags it; anywhere else draws a new loop.
     else if (tool === 'select') mode = selBox && px >= selBox[0] && px <= selBox[0] + selBox[2] && py >= selBox[1] && py <= selBox[1] + selBox[3] ? 'moveInk' : 'lasso'
-    else if (e.pointerType === 'pen' || ctl.touchWrites()) mode = 'pen'
+    else if (e.pointerType === 'pen' || (ctl.touchWrites() && !mouse)) mode = 'pen'
     if (p.readOnly && mode !== 'select') mode = 'select'
     current.current = {
       mode,
+      noteId: pressedNote || undefined,
+      alt: e.altKey,
+      shift: e.shiftKey,
       points: [point(e, e.timeStamp)],
       start: e.timeStamp,
       id: e.pointerId,
@@ -516,6 +564,7 @@ export const PageView = memo(function PageView(p: Props) {
       if (!cur) {
         const [x, y] = toPage(e.clientX, e.clientY)
         ctl.hover(index, x, y)
+        cursorFor(e)
       }
       return
     }
@@ -535,6 +584,20 @@ export const PageView = memo(function PageView(p: Props) {
     if (cur.mode === 'lasso') {
       cur.points.push([x, y, 0, 0])
       setLasso(cur.points.map((q) => [q[0], q[1]]))
+    } else if (cur.mode === 'rect' || cur.mode === 'band') {
+      const [sx, sy] = cur.points[0]
+      const r: Rect = [Math.min(sx, x), Math.min(sy, y), Math.abs(x - sx), Math.abs(y - sy)]
+      if (cur.mode === 'rect') setRegionRect(r)
+      else setBandRect(r)
+    } else if (cur.mode === 'moveNote') {
+      const note = p.notes.find((n) => n.id === cur.noteId)
+      const [sx, sy] = cur.points[0]
+      // A small wobble is still a click.
+      if (!note || (!drag && Math.hypot(x - sx, y - sy) * zoom < 4)) return
+      const [nx, ny, nw, nh] = note.box
+      const dx = Math.min(Math.max(x - sx, -margin - nx), size.width + margin - nx - nw)
+      const dy = Math.min(Math.max(y - sy, -ny), size.height - ny - nh)
+      setDrag({ ids: new Set(note.strokeIds), noteId: note.id, dx, dy })
     } else if (cur.mode === 'moveInk') {
       if (!p.inkSelection || !selBox) return
       const [sx, sy] = cur.points[0]
@@ -588,7 +651,18 @@ export const PageView = memo(function PageView(p: Props) {
     } else if (cur.mode === 'select') {
       setSelRects([])
       if (Math.hypot(x - sx, y - sy) * zoom < 8) ctl.tap(index, sx, sy)
-      else ctl.finishSelection(index, [sx, sy], [x, y])
+      else ctl.finishSelection(index, [sx, sy], [x, y], e.clientX, e.clientY)
+    } else if (cur.mode === 'rect' || cur.mode === 'band') {
+      setRegionRect(null)
+      setBandRect(null)
+      const r: Rect = [Math.min(sx, x), Math.min(sy, y), Math.abs(x - sx), Math.abs(y - sy)]
+      if (Math.hypot(x - sx, y - sy) * zoom < 6) ctl.tap(index, sx, sy)
+      else if (cur.mode === 'rect') ctl.finishRect(index, r, false, e.clientX, e.clientY)
+      else ctl.band(index, r, !!cur.shift)
+    } else if (cur.mode === 'moveNote') {
+      if (drag?.noteId && (drag.dx !== 0 || drag.dy !== 0)) ctl.moveNote(index, drag.noteId, drag.dx, drag.dy)
+      else ctl.tap(index, sx, sy)
+      setDrag(null)
     }
   }
 
@@ -602,9 +676,22 @@ export const PageView = memo(function PageView(p: Props) {
     if (current.current?.mode === 'pen') ctl.strokeCancelled()
     current.current = null
     setRegionRect(null)
+    setBandRect(null)
     setSelRects([])
     setLasso(null)
     setDrag(null)
+  }
+
+  /** The mouse cursor says what a drag will do before you press. */
+  function cursorFor(e: React.PointerEvent): void {
+    if (e.pointerType !== 'mouse' || ctl.toolRef.current !== 'pen') return
+    const el = e.currentTarget as HTMLElement
+    const [x, y] = toPage(e.clientX, e.clientY)
+    const c = e.altKey ? 'crosshair'
+      : ctl.noteAt(index, x, y) ? 'move'
+        : e.shiftKey || x < 0 || x > size.width ? 'default'
+          : ctl.onText(index, x, y) ? 'text' : 'crosshair'
+    if (el.style.cursor !== c) el.style.cursor = c
   }
 
   // ---- Moving the selected note by its grip, with the pen, a finger or the mouse ----
@@ -761,6 +848,51 @@ export const PageView = memo(function PageView(p: Props) {
     ))
   }
 
+  // ---- Changing a typed note's width by its sides: the text rewraps, its size stays ----
+  const widthGrab = useRef<{ id: number; noteId: string; side: 'w' | 'e'; px: number; box: Rect } | null>(null)
+  const [widthDrag, setWidthDrag] = useState<{ noteId: string; x: number; w: number } | null>(null)
+
+  function onWidthDown(side: 'w' | 'e', note: MarginNote, e: React.PointerEvent): void {
+    e.preventDefault()
+    e.stopPropagation()
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* simulated pointers cannot be captured */
+    }
+    const [px] = toPage(e.clientX, e.clientY)
+    widthGrab.current = { id: e.pointerId, noteId: note.id, side, px, box: note.box }
+  }
+
+  function onWidthMove(e: React.PointerEvent): void {
+    const g = widthGrab.current
+    if (!g || g.id !== e.pointerId) return
+    e.stopPropagation()
+    const [x] = toPage(e.clientX, e.clientY)
+    const [bx, , bw] = g.box
+    const dx = x - g.px
+    const min = 40
+    if (g.side === 'e') setWidthDrag({ noteId: g.noteId, x: bx, w: Math.min(Math.max(min, bw + dx), size.width + margin - bx) })
+    else {
+      const left = Math.min(Math.max(-margin, bx + dx), bx + bw - min)
+      setWidthDrag({ noteId: g.noteId, x: left, w: bx + bw - left })
+    }
+  }
+
+  function onWidthUp(e: React.PointerEvent): void {
+    const g = widthGrab.current
+    if (!g || g.id !== e.pointerId) return
+    e.stopPropagation()
+    widthGrab.current = null
+    if (widthDrag && (Math.abs(widthDrag.w - g.box[2]) > 0.5 || Math.abs(widthDrag.x - g.box[0]) > 0.5)) ctl.setNoteWidth(index, g.noteId, widthDrag.x, widthDrag.w)
+    setWidthDrag(null)
+  }
+
+  function onWidthCancel(): void {
+    widthGrab.current = null
+    setWidthDrag(null)
+  }
+
   function onContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
     // A palm resting while writing is a long touch; it must not open the menu.
@@ -828,9 +960,21 @@ export const PageView = memo(function PageView(p: Props) {
               fill={h.current ? '#ff922b' : '#ffe066'} opacity={h.current ? 0.55 : 0.5} />
           ))
         )}
-        {selRects.map((r, i) => (
-          <rect key={i} x={r[0]} y={r[1]} width={r[2]} height={r[3]} fill="#74c0fc" opacity={0.5} />
+        {(selRects.length ? selRects : p.pendingRects ?? []).map((r, i) => (
+          <rect key={i} data-pending-selection="" x={r[0]} y={r[1]} width={r[2]} height={r[3]} fill="#74c0fc" opacity={0.5} />
         ))}
+        {p.pendingRect && !regionRect && (
+          <rect data-testid={`pending-rect-${index}`} x={p.pendingRect[0]} y={p.pendingRect[1]} width={p.pendingRect[2]} height={p.pendingRect[3]}
+            fill="#ffa94d22" stroke="#d9480f" strokeWidth={1} strokeDasharray="4 3" />
+        )}
+        {bandRect && (
+          <rect data-testid={`band-${index}`} x={bandRect[0]} y={bandRect[1]} width={bandRect[2]} height={bandRect[3]}
+            fill="#4dabf718" stroke="#1c7ed6" strokeWidth={1} strokeDasharray="4 3" />
+        )}
+        {p.chosenIds && p.targets.filter((t) => p.chosenIds!.has(t.id)).flatMap((t) => (t.rects ?? []).map((r, i) => (
+          <rect key={`chosen-${t.id}-${i}`} data-chosen={t.id} x={r[0] - 2} y={r[1] - 2} width={r[2] + 4} height={r[3] + 4}
+            fill="none" stroke="#1c7ed6" strokeWidth={1.2} strokeDasharray="3 2" />
+        )))}
         {regionRect && (
           <rect x={regionRect[0]} y={regionRect[1]} width={regionRect[2]} height={regionRect[3]}
             fill="#ffa94d33" stroke="#d9480f" strokeWidth={1} strokeDasharray="4 3" />
@@ -853,9 +997,15 @@ export const PageView = memo(function PageView(p: Props) {
         {index + 1} / {p.pageCount}
       </div>
       <div className="notes-layer">
-        {notes.map((n) => (
-          <NoteBox key={n.id} note={n} zoom={zoom} margin={margin} selected={n.id === p.selectedNoteId} showText={p.showText} />
-        ))}
+        {notes.map((n) => {
+          const shown = widthDrag?.noteId === n.id ? { ...n, box: [widthDrag.x, n.box[1], widthDrag.w, n.box[3]] as Rect } : n
+          if (isTyped(n) && n.id === p.editingNoteId) return null
+          return (
+            <NoteBox key={n.id} note={shown} zoom={zoom} margin={margin} showText={p.showText}
+              selected={n.id === p.selectedNoteId || !!p.chosenIds?.has(n.id)}
+              onHeight={isTyped(n) && !drag && !widthDrag ? ctl.noteHeight : undefined} />
+          )
+        })}
       </div>
       <div
         className={p.inkSelection?.size ? 'input-layer selecting-ink' : 'input-layer'}
@@ -865,6 +1015,12 @@ export const PageView = memo(function PageView(p: Props) {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
         onContextMenu={onContextMenu}
+        onDoubleClick={(e) => {
+          if (lastPointer.current !== 'mouse') return
+          if (ctl.toolRef.current !== 'pen') return
+          const [x, y] = toPage(e.clientX, e.clientY)
+          ctl.doubleClick(index, x, y)
+        }}
       />
       {selectedNote && (() => {
         const shown = notes.find((n) => n.id === selectedNote.id) ?? selectedNote
@@ -875,7 +1031,18 @@ export const PageView = memo(function PageView(p: Props) {
               onPointerDown={onGripDown} onPointerMove={onGripMove} onPointerUp={onGripUp} onPointerCancel={onGripCancel}>
               ✥
             </div>
-            {sizeHandles(shown.box, new Set(selectedNote.strokeIds), selectedNote.id, 'note-handle')}
+            {isTyped(selectedNote)
+              ? (['w', 'e'] as const).map((side) => {
+                  const b = widthDrag?.noteId === selectedNote.id ? [widthDrag.x, shown.box[1], widthDrag.w, shown.box[3]] : shown.box
+                  const left = side === 'w' ? (b[0] + margin) * zoom - 6 : (b[0] + b[2] + margin) * zoom - 4
+                  return (
+                    <div key={side} className="width-handle" data-testid={`note-width-${side}`} title="Drag to make the note wider or narrower"
+                      style={{ left, top: b[1] * zoom, height: Math.max(14, b[3] * zoom) }}
+                      onPointerDown={(e) => onWidthDown(side, selectedNote, e)}
+                      onPointerMove={onWidthMove} onPointerUp={onWidthUp} onPointerCancel={onWidthCancel} />
+                  )
+                })
+              : sizeHandles(shown.box, new Set(selectedNote.strokeIds), selectedNote.id, 'note-handle')}
           </>
         )
       })()}
@@ -927,10 +1094,60 @@ interface NoteBoxProps {
   margin: number
   selected: boolean
   showText: boolean
+  /** For a typed note: reports its drawn height, in page units. */
+  onHeight?: (noteId: string, height: number) => void
+}
+
+/** Lines a typed note shows before it folds, until it is selected. */
+const FOLD_LINES = 6
+
+/** A typed note: its text, wrapped to its width, at its own size; long notes fold. */
+function TypedNote({ note, zoom, margin, selected, onHeight }: NoteBoxProps) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [x, y, w] = note.box
+  const fs = note.fontSize ?? 10
+  const [overflow, setOverflow] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const report = () => {
+      setOverflow(el.scrollHeight > el.clientHeight + 2)
+      if (onHeight && !selected) {
+        const h = el.offsetHeight / zoom
+        if (Math.abs(h - note.box[3]) > 1) onHeight(note.id, Math.round(h * 10) / 10)
+      }
+    }
+    report()
+    const ro = new ResizeObserver(report)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [note.id, note.box, note.text, zoom, onHeight, selected])
+  const folded = !selected
+  return (
+    <>
+      {selected && (
+        <div className="note-outline" data-note-outline={note.id}
+          style={{ left: (x + margin) * zoom - 3, top: y * zoom - 3, width: w * zoom + 6, height: (ref.current?.offsetHeight ?? note.box[3] * zoom) + 6 }} />
+      )}
+      <div ref={ref} className={`note-box typed-note kind-${note.kind}${folded ? ' folded' : ''}`} data-note={note.id} data-typed-note={note.id}
+        style={{
+          left: (x + margin) * zoom, top: y * zoom, width: w * zoom, fontSize: fs * zoom, lineHeight: TYPED_LINE,
+          ...(folded ? { maxHeight: fs * zoom * TYPED_LINE * FOLD_LINES + 6 } : {})
+        }}>
+        <MathText text={note.text} pandoc />
+        {note.targetIds.length === 0 && <span className="note-badge none" title="No target"> · no target</span>}
+      </div>
+      {folded && overflow && (
+        <div className="note-more" style={{ left: (x + margin) * zoom, top: y * zoom + fs * zoom * TYPED_LINE * FOLD_LINES + 6 }}>… click to show all</div>
+      )}
+    </>
+  )
 }
 
 /** Handwriting always stays visible. The typed text is a small label shown only on request. */
-function NoteBox({ note, zoom, margin, selected, showText }: NoteBoxProps) {
+function NoteBox(props: NoteBoxProps) {
+  if (isTyped(props.note)) return <TypedNote {...props} />
+  const { note, zoom, margin, selected, showText } = props
   const [x, y, w, h] = note.box
   const hasText = showText && note.kind !== 'drawing' && note.text !== ''
   if (!hasText && !selected) return null

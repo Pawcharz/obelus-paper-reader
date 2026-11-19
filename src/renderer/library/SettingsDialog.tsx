@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { AppSettings, InputMode, MathLayout } from '../../shared/types'
+import { AppMode, AppSettings, InputMode, MathLayout } from '../../shared/types'
+import { detectMode, modeOf } from '../mode'
 
 interface Props {
   settings: AppSettings
@@ -18,6 +19,7 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
   const [marginShare, setMarginShare] = useState(settings.marginShare ?? 1)
   const [inputMode, setInputMode] = useState<InputMode>(settings.inputMode ?? 'pen')
   const [mathLayout, setMathLayout] = useState<MathLayout>(settings.mathLayout ?? 'wrap')
+  const [mode, setMode] = useState<AppMode>(modeOf(settings))
 
   useEffect(() => {
     void window.api.listRecognizers().then(setRecognizers)
@@ -34,7 +36,8 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
         cacheMaxBytes: Math.max(0.05, gb) * 1024 ** 3,
         marginShare,
         inputMode,
-        mathLayout
+        mathLayout,
+        mode
       })
     )
     onClose()
@@ -48,18 +51,32 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
       }}>
         <h3>Settings</h3>
         <label>
+          Mode
+          <select value={mode} data-testid="mode-select" onChange={(e) => setMode(e.target.value as AppMode)}>
+            <option value="pen">Pen: a touchscreen with an active pen; you write in the margins{detectMode() === 'pen' ? ' (suggested here)' : ''}</option>
+            <option value="pc">PC: mouse or trackpad and keyboard; you type your notes{detectMode() === 'pc' ? ' (suggested here)' : ''}</option>
+          </select>
+        </label>
+        {mode === 'pc' && (
+          <div className="hint" data-testid="mode-hint">
+            Select text to mark it, then press Note (N) for a typed margin note. Double-click the margin for a note there. Right-click anything for its menu; press ? for all keys.
+          </div>
+        )}
+        {mode === 'pen' && (<>
+        <label>
           Writing with
           <select value={inputMode} data-testid="input-mode-select" onChange={(e) => setInputMode(e.target.value as InputMode)}>
             <option value="pen">An active pen: the pen writes, a finger scrolls (default)</option>
-            <option value="touch">A finger, the mouse or a simple stylus: it writes, two fingers scroll and zoom</option>
+            <option value="touch">A finger or a simple stylus: it writes, two fingers scroll and zoom</option>
           </select>
         </label>
         {inputMode === 'touch' && (
           <div className="hint" data-testid="input-mode-hint">
-            One finger, a stylus without electronics, or the left mouse button writes with the tool chosen in the toolbar.
+            One finger or a stylus without electronics writes with the tool chosen in the toolbar. The mouse selects, as in PC mode.
             Scroll and zoom with two fingers or the mouse wheel. Resting your palm on the screen will write, so keep it off.
           </div>
         )}
+        </>)}
         <label>
           Writing margin on each side of a page (only hides writing outside it; nothing is deleted)
           <select value={String(marginShare)} data-testid="margin-select" onChange={(e) => setMarginShare(Number(e.target.value))}>

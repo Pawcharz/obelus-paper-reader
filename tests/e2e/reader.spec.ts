@@ -788,9 +788,13 @@ test('a finger scrolls, unless the pen was just in use', async () => {
   expect(await scrollTop()).toBe(still)
 })
 
-test('mouse selection creates a text target', async () => {
+test('a mouse selection is marked only when Mark is chosen', async () => {
   const entry = await openSample(run)
   await penStroke(run.page, 0, [[105, 108], [160, 108], [212, 108]], 'mouse')
+  await expect(run.page.getByTestId('selection-bar')).toBeVisible()
+  expect((await layerOf(run.page, entry.meta.id)).annotations.targets).toHaveLength(0)
+  await run.page.getByTestId('sel-mark').click()
+  await expect(run.page.getByTestId('selection-bar')).toHaveCount(0)
   const layer = await layerOf(run.page, entry.meta.id)
   expect(layer.annotations.targets[0].style).toBe('selection')
   expect(layer.annotations.targets[0].quote?.exact).toContain('models')

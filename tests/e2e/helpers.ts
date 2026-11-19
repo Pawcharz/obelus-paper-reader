@@ -35,7 +35,9 @@ export async function launch(existing?: { dir: string; settings?: boolean }): Pr
         workspaces: [{ id: wsId, name: 'Personal', path: workspace }],
         activeWorkspaceId: wsId,
         // Tests were laid out with half-page margins; the 100% default is tested on its own.
-        marginShare: 0.5
+        marginShare: 0.5,
+        // The tests drive the pen; PC mode is tested by switching to it.
+        mode: 'pen'
       })
     )
     await fs.mkdir(join(workspace, 'papers'), { recursive: true })

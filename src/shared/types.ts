@@ -78,6 +78,23 @@ export interface MarginNote {
   targetIds: string[]
   createdAt: string
   updatedAt: string
+  /**
+   * How the note was made. "typed": typed on a keyboard, with no strokes; its text is exactly what
+   * was typed. Missing means handwriting.
+   */
+  input?: 'ink' | 'typed'
+  /** A typed note's text size, in page units. Its width is `box[2]`; its height follows the text. */
+  fontSize?: number
+  /**
+   * A handwritten note turned into a typed one keeps its ink here, out of the page's strokes, so
+   * nothing written is ever lost and "Back to ink" can restore it.
+   */
+  hiddenInk?: Stroke[]
+}
+
+/** Whether a note was typed rather than handwritten. */
+export function isTyped(n: Pick<MarginNote, 'input'>): boolean {
+  return n.input === 'typed'
 }
 
 export interface Annotations {
@@ -191,7 +208,18 @@ export interface AppSettings {
    * at relations and operators (the default), "scroll" keeps one line that scrolls sideways.
    */
   mathLayout?: MathLayout
+  /**
+   * "pen": a touchscreen with an active pen; margin notes are handwritten. "pc": a mouse or trackpad
+   * and a keyboard; margin notes are typed and marks are made by selecting text. Missing: chosen
+   * from the computer, PC when it has no touchscreen.
+   */
+  mode?: AppMode
+  /** Text size for new typed notes on this computer. */
+  typedNoteSize?: TypedNoteSize
 }
+
+export type AppMode = 'pen' | 'pc'
+export type TypedNoteSize = 'S' | 'M' | 'L'
 
 export type InputMode = 'pen' | 'touch'
 
