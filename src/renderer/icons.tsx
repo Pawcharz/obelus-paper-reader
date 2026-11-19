@@ -64,3 +64,21 @@ export function PencilIcon() {
     </svg>
   )
 }
+
+export function PenModeIcon() {
+  return (
+    <svg {...base}>
+      <path d="M4 20l1.2-4.8L15.6 4.8a2 2 0 012.8 0l.8.8a2 2 0 010 2.8L8.8 18.8z" />
+      <path d="M13.5 7l3.5 3.5" />
+    </svg>
+  )
+}
+
+export function KeyboardIcon() {
+  return (
+    <svg {...base}>
+      <rect x="2.5" y="6" width="19" height="12" rx="2" />
+      <path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M6 14h12" />
+    </svg>
+  )
+}

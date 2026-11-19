@@ -310,3 +310,29 @@ button.danger-solid { background: #c92a2a; color: #fff; border-color: #c92a2a; }
 .recognizer-choice .check { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 3px 0; }
 /* The part of a page on screen drawn again at full sharpness when zoomed in a long way. */
 .detail-canvas { position: absolute; display: none; pointer-events: none; }
+
+/* ---- PC mode: typed notes, selections, bars ---- */
+.note-box.typed-note { background: #fffdf3; border: 1px solid #e8dca8; padding: 2px 4px; color: #1f3a93; white-space: pre-wrap; overflow-wrap: anywhere; box-sizing: border-box; overflow: hidden; font-family: system-ui, "Segoe UI", sans-serif; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+.note-box.typed-note.kind-question { background: #fff4e6; border-color: #ffc078; }
+.note-box.typed-note .note-badge.none { color: #868e96; font-size: .8em; }
+.note-more { position: absolute; font-size: 11px; color: #868e96; background: #fffdf3; padding: 0 4px; border-radius: 0 0 3px 3px; }
+.width-handle { position: absolute; width: 10px; z-index: 6; cursor: ew-resize; touch-action: none; }
+.width-handle::after { content: ''; position: absolute; left: 3px; top: 50%; width: 4px; height: 18px; margin-top: -9px; background: #fff; border: 1.5px solid #d9480f; border-radius: 3px; }
+.typed-editor { position: absolute; z-index: 25; display: flex; flex-direction: column; gap: 3px; }
+.typed-editor textarea { font-family: system-ui, "Segoe UI", sans-serif; color: #1f3a93; background: #fff; border: 1.5px solid #d9480f; border-radius: 4px; padding: 3px 5px; resize: none; line-height: 1.3; box-shadow: 0 3px 12px rgba(0,0,0,.18); overflow: hidden; }
+.typed-chip { align-self: flex-start; font-size: 11px; background: #fff4e6; border: 1px solid #ffc078; color: #c2410c; border-radius: 10px; padding: 1px 4px 1px 8px; display: flex; gap: 4px; align-items: center; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.typed-chip.none { background: #f1f3f5; border-color: #dee2e6; color: #495057; }
+.typed-chip button { border: none; background: none; padding: 0 3px; font-size: 12px; color: inherit; cursor: pointer; }
+.typed-editor .typed-hint { font-size: 10.5px; color: #868e96; }
+.sel-bar { position: absolute; z-index: 22; display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 3px 12px rgba(0,0,0,.2); padding: 4px; font-size: 12px; white-space: nowrap; }
+.sel-bar button kbd, .context-menu kbd { font-family: inherit; font-size: 10px; color: #868e96; margin-left: 6px; }
+.pc-strip { display: flex; gap: 14px; align-items: center; padding: 6px 12px; background: #e7f5ff; border-bottom: 1px solid #a5d8ff; font-size: 12.5px; }
+.pc-strip .spacer { flex: 1; }
+.key-sheet { max-width: 760px; max-height: 80vh; overflow: auto; }
+.key-sheet table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.key-sheet td { padding: 3px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.key-sheet td:first-child { white-space: nowrap; font-weight: 600; }
+.key-sheet h4 { margin: 12px 0 4px; }
+.size-btn { min-width: 26px; }
+.more-group { position: relative; }
+.more-menu { position: absolute; top: 100%; right: 0; z-index: 40; }

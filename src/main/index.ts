@@ -52,6 +52,21 @@ function createWindow(): BrowserWindow {
     win.maximize()
     if (!process.env.PAPER_READER_HIDDEN) win.show()
   })
+  // Text boxes get the usual menu: spelling suggestions, Add to dictionary, Cut, Copy, Paste.
+  // Elsewhere the page shows its own menus.
+  win.webContents.on('context-menu', (_e, params) => {
+    if (!params.isEditable) return
+    const items: Electron.MenuItemConstructorOptions[] = params.dictionarySuggestions.map((s) => ({
+      label: s, click: () => win.webContents.replaceMisspelling(s)
+    }))
+    if (params.misspelledWord) {
+      if (!items.length) items.push({ label: 'No suggestions', enabled: false })
+      items.push({ label: 'Add to dictionary', click: () => win.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord) })
+      items.push({ type: 'separator' })
+    }
+    items.push({ role: 'cut', enabled: params.editFlags.canCut }, { role: 'copy', enabled: params.editFlags.canCopy }, { role: 'paste', enabled: params.editFlags.canPaste })
+    Menu.buildFromTemplate(items).popup({ window: win })
+  })
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (isSafeExternal(url)) void shell.openExternal(url)
     return { action: 'deny' }

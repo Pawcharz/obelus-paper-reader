@@ -537,6 +537,16 @@ function MapInner({ onOpen, notify, onBusy }: Props) {
       })
       return
     }
+    // A mouse click selects, as on a desktop; a double-click opens. A pen or finger tap opens.
+    if ((e.nativeEvent as PointerEvent).pointerType === 'mouse' && node.type === 'paper') {
+      setSelected(new Set([node.id]))
+      return
+    }
+    void openNode(node.id)
+  }
+
+  function onNodeDoubleClick(e: React.MouseEvent, node: Node): void {
+    if (node.type !== 'paper' || selecting || e.ctrlKey || e.shiftKey) return
     void openNode(node.id)
   }
 
@@ -803,6 +813,7 @@ function MapInner({ onOpen, notify, onBusy }: Props) {
               onInit={(i) => { flow.current = i as unknown as ReactFlowInstance }}
               onMoveEnd={(_, v) => { if (map) storedSet(viewportKey(map.id), JSON.stringify(v)) }}
               onNodeClick={onNodeClick}
+              onNodeDoubleClick={onNodeDoubleClick}
               onNodesChange={(changes) => setNodes((ns) => applyNodeChanges(changes, ns))}
               onNodeDragStop={onNodeDragStop}
               onSelectionEnd={onSelectionEnd}

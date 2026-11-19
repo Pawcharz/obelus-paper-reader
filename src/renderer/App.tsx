@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppSettings, PaperEntry, PreviewItem, paperLabel } from '../shared/types'
 import { Reader, ReaderSource } from './reader/Reader'
-import { GearIcon, LibraryIcon, MapsIcon, ObelusLogo, RecordIcon } from './icons'
+import { GearIcon, KeyboardIcon, LibraryIcon, MapsIcon, ObelusLogo, PenModeIcon, RecordIcon } from './icons'
+import { modeOf } from './mode'
 
 /** One or two letters for a workspace's badge in the side rail. */
 function initials(name: string): string {
@@ -48,6 +49,14 @@ export function App() {
       setUsageLogging(!!s.usageLog)
     })
   }, [])
+
+  const mode = settings ? modeOf(settings) : 'pen'
+  const toggleMode = useCallback(async () => {
+    if (!settings) return
+    const next = modeOf(settings) === 'pc' ? 'pen' : 'pc'
+    logEvent('mode', { mode: next, via: 'rail' })
+    setSettings(await window.api.updateSettings({ mode: next }))
+  }, [settings])
 
   const toggleUsageLog = useCallback(async () => {
     const on = !settings?.usageLog
@@ -382,6 +391,16 @@ export function App() {
         </button>
         <div className="spacer" />
         <button
+          data-testid="mode-toggle"
+          className="rail-btn"
+          title={mode === 'pc'
+            ? 'PC mode: mouse and keyboard, typed notes. Click for Pen mode.'
+            : 'Pen mode: a pen writes in the margins. Click for PC mode (mouse and keyboard).'}
+          onClick={() => void toggleMode()}
+        >
+          {mode === 'pc' ? <KeyboardIcon /> : <PenModeIcon />}<span className="rail-label">{mode === 'pc' ? 'PC mode' : 'Pen mode'}</span>
+        </button>
+        <button
           data-testid="log-toggle"
           className={settings.usageLog ? 'rail-btn log-toggle on' : 'rail-btn log-toggle'}
           title={settings.usageLog
@@ -425,6 +444,10 @@ export function App() {
               active={view.kind === 'doc' && view.key === t.key}
               marginShare={settings.marginShare ?? 1}
               inputMode={settings.inputMode ?? 'pen'}
+              mode={mode}
+              typedNoteSize={settings.typedNoteSize ?? 'M'}
+              onTypedNoteSize={(size) => void window.api.updateSettings({ typedNoteSize: size }).then(setSettings)}
+              onSwitchMode={(m) => void window.api.updateSettings({ mode: m }).then(setSettings)}
               mathLayout={settings.mathLayout ?? 'wrap'}
               onLookUp={(text, citingId, fromMapId, page) => void lookUp(t.key, text, citingId, fromMapId, page)}
               onAddToMap={(text, citingId, fromMapId) => void addToMap(text, citingId, fromMapId)}

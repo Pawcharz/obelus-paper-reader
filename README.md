@@ -4,7 +4,7 @@
 
 *Formerly the working title "Paper Reader".* An obelus is the mark ancient editors put beside a passage to say "look again". The app's underline works the same way.
 
-A pen-first reader for research papers, for tablets and 2-in-1 laptops running Windows or Linux.
+A pen-first reader for research papers, for tablets and 2-in-1 laptops running Windows or Linux. On a computer without a pen, **PC mode** does the same with a mouse and keyboard.
 
 https://github.com/user-attachments/assets/99075826-fdaa-479a-ad71-d672b8879ec3
 
@@ -37,6 +37,13 @@ Write in the margins as you would on paper. Your handwriting stays as ink and is
 **Side notes and maps**
 - Each paper has a notes pane with **side notes**: Markdown with maths, written by you or by an AI agent. They can link to your notes, your marks, a page, words on a page (`[Eq. 3](<text:4:Training objective>)`), or another paper at a page. Long equations wrap onto new lines, or scroll sideways if you prefer (**Settings**).
 - **Maps** lay out papers as boxes with arrows between them, in groups, with read and unread shown at a glance.
+
+**PC mode: mouse and keyboard**
+- On a computer without a touchscreen the app starts in PC mode. Switch at any time in **Settings → Mode**, or with the toggle at the bottom of the left rail.
+- Drag over text to select it, then **Mark**, **Note** or **Copy**. Drag over a figure or blank paper to draw a box round it; press `R` first to box an equation.
+- Notes are typed. A note sits in the margin beside what you selected and is linked to it, as a handwritten one is. Double-click a note to edit it, drag it to move it, and write maths between dollar signs (`$x^2$`).
+- The keyboard is enough for most things: `H` marks the selection, `N` adds a note, `Ctrl+F` finds and `Ctrl+Enter` marks the match. Press `?` for every key, or right-click anything for its menu.
+- Papers annotated by hand on a tablet open as they are. A handwritten note can be converted to a typed one, and back to ink.
 
 **Pen, finger and mouse**
 - With an active pen, the pen writes and a finger scrolls and zooms. A resting palm is ignored.
