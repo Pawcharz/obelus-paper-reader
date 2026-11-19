@@ -46,7 +46,7 @@ Write in the margins as you would on paper. Your handwriting stays as ink and is
 
 ## Install
 
-Download the installer from the [latest release](https://github.com/Pawcharz/paper-reader/releases/latest):
+Download the installer from the [latest release](https://github.com/Pawcharz/obelus-paper-reader/releases/latest):
 
 - **Windows 10 or 11:** `Obelus-Setup-<version>.exe`. It is not signed, so Windows SmartScreen warns once: choose **More info**, then **Run anyway**.
 - **Linux (x64):** `Obelus-<version>-x86_64.AppImage`. Make it executable (`chmod +x Obelus-*.AppImage`) and run it.
@@ -60,8 +60,8 @@ A pen is not required, but the app is designed for one. On Linux, a pen works in
 You need **[Node.js](https://nodejs.org/)** with npm (developed with Node.js 26) and **Git**.
 
 ```
-git clone https://github.com/Pawcharz/paper-reader.git
-cd paper-reader
+git clone https://github.com/Pawcharz/obelus-paper-reader.git
+cd obelus-paper-reader
 npm ci
 start.cmd        on Windows
 ./start.sh       on Linux
