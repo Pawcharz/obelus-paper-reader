@@ -18,7 +18,7 @@ function readSort(): { key: SortKey; descending: boolean } {
   }
   return { key: 'status', descending: false }
 }
-import { isTyping, mod, plain } from '../keys'
+import { isTyping, mod, plain, TRASH } from '../keys'
 
 interface Props {
   onOpen: (e: PaperEntry) => void
@@ -186,18 +186,18 @@ export function Library({ onOpen, notify, onBusy, onDeleted }: Props) {
     } else notify(r.reason)
   }
 
-  /** Deleting a paper loses its PDF and every note on it, so it is confirmed and goes to the Recycle Bin. */
+  /** Deleting a paper loses its PDF and every note on it, so it is confirmed and goes to the Recycle Bin or Trash. */
   async function deletePaper(p: PaperEntry): Promise<void> {
     setMenuFor('')
     const ok = await askConfirm({
       title: `Delete "${p.meta.title}"?`,
-      body: 'The PDF and all your notes and marks on it go to the Recycle Bin, where they can be restored.',
+      body: `The PDF and all your notes and marks on it go to the ${TRASH}, where they can be restored.`,
       action: 'Delete paper'
     })
     if (!ok) return
     await window.api.deletePaper(p.meta.id)
     onDeleted(p.meta.id)
-    notify(`Moved to the Recycle Bin: ${p.meta.title}`)
+    notify(`Moved to the ${TRASH}: ${p.meta.title}`)
     await reload()
   }
 

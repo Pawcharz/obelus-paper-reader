@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { InkPoint, MarginNote, NoteReading, PaperEntry, PreviewItem, Rect, SCHEMA_VERSION, Stroke, Target, paperLabel, type InputMode } from '../../shared/types'
+import { InkPoint, MarginNote, NoteReading, PaperEntry, PreviewItem, Rect, SCHEMA_VERSION, Stroke, Target, paperLabel, type InputMode, type MathLayout } from '../../shared/types'
 import { wordsIn } from '../../shared/words'
 import { findArxivId, findDoi, newId } from '../../shared/ids'
 import {
@@ -127,6 +127,8 @@ interface Props {
   /** Writing space on each side, as a share of the page width (Settings; 1 by default). */
   marginShare: number
   inputMode: InputMode
+  /** How side notes show display equations too wide for the pane (Settings). */
+  mathLayout: MathLayout
   /** Starts a reference lookup that reports back app-wide. */
   onLookUp: (text: string, citingId: string, fromMapId: string, page?: number) => void
   /** Adds a reference to the map as a suggestion, without a preview. */
@@ -149,7 +151,7 @@ interface Menu {
   items: { label: string; run: () => void; testId?: string }[]
 }
 
-export function Reader({ source, active, marginShare, inputMode, onLookUp, onAddToMap, onPreviewAdded, onEntryChanged, notify }: Props) {
+export function Reader({ source, active, marginShare, inputMode, mathLayout, onLookUp, onAddToMap, onPreviewAdded, onEntryChanged, notify }: Props) {
   const entry = source.kind === 'paper' ? source.entry : null
   const paperId = entry?.meta.id ?? null
   const readOnly = source.kind === 'preview'
@@ -2115,6 +2117,7 @@ export function Reader({ source, active, marginShare, inputMode, onLookUp, onAdd
             findQuery={findOpen && findInSide ? findQuery : ''}
             findFocus={findOpen && findInSide ? sideFocus : null}
             newNoteTick={newNoteTick}
+            mathLayout={mathLayout}
           />
           </div>
         )}

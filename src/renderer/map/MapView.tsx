@@ -11,7 +11,7 @@ import { absoluteBoxes, applyPositions, GROUP_COLLAPSED_H, groupNodeId, LaidNode
 import { newId } from '../../shared/ids'
 import { pinchView, Point, View } from '../../shared/pinch'
 import { askConfirm } from '../confirm'
-import { isTyping, mod, plain } from '../keys'
+import { isTyping, mod, plain, TRASH } from '../keys'
 import { logEvent, pointerVia } from '../usageLog'
 import { PanelToggle, ResizeHandle, useSidebar } from '../Sidebar'
 
@@ -702,19 +702,19 @@ function MapInner({ onOpen, notify, onBusy }: Props) {
     }
   }
 
-  /** A map holds your reading plan, so deleting it is confirmed and the file goes to the Recycle Bin. */
+  /** A map holds your reading plan, so deleting it is confirmed and the file goes to the Recycle Bin or Trash. */
   async function deleteMap(m: ReadingMap): Promise<void> {
     setMapMenu('')
     const ok = await askConfirm({
       title: `Delete the map "${m.name}"?`,
-      body: 'The map goes to the Recycle Bin, where it can be restored. The papers stay in your library.',
+      body: `The map goes to the ${TRASH}, where it can be restored. The papers stay in your library.`,
       action: 'Delete map'
     })
     if (!ok) return
     await window.api.removeMap(m.id)
     if (m.id === activeId) setActiveId('')
     await reloadMaps()
-    notify(`Moved to the Recycle Bin: ${m.name}`)
+    notify(`Moved to the ${TRASH}: ${m.name}`)
   }
 
   return (

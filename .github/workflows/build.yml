@@ -1,0 +1,56 @@
+# Checks and installers for Windows and Linux, on every push and pull request.
+name: Build
+
+on:
+  push:
+    # Branches only: a version tag runs release.yml instead.
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  installers:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+            files: dist/*.exe
+          - os: ubuntu-latest
+            script: dist:linux
+            files: dist/*.AppImage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run ${{ matrix.script }}
+        env:
+          # No signing certificate: the installers are unsigned on purpose.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obelus-${{ matrix.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error

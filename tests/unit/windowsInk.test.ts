@@ -32,7 +32,8 @@ describe('joinLines', () => {
   })
 })
 
-describe.runIf(process.platform === 'win32')('WindowsInkEngine', () => {
+// Needs the Polish handwriting recognizer, which build servers (CI) do not have.
+describe.runIf(process.platform === 'win32' && !process.env.CI)('WindowsInkEngine', () => {
   const engine = new WindowsInkEngine(join(__dirname, '../../resources/ink-sidecar.ps1'))
   afterAll(() => engine.dispose())
 

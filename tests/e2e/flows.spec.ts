@@ -72,6 +72,44 @@ test.describe('side notes', () => {
     await expect(tab).toHaveCount(0, { timeout: 8000 })
   })
 
+  test('a long display equation wraps onto new lines, or scrolls on its own; the note stays the width of the pane', async () => {
+    const entry = await addSample(run)
+    await refreshLibrary(run.page)
+    await openFirst(run.page)
+    const dir = join(entry.folder, 'people', 'test-author', 'notes')
+    await fs.mkdir(dir, { recursive: true })
+    const eq = String.raw`\ln \int \prod_{t=1}^{T} p(s_t\mid s_{t-1},a_{t-1})\,p(o_t\mid s_t)\;ds_{1:T} \;\ge\; \sum_{t=1}^{T}\Big(\underbrace{\mathbb{E}_q[\ln p(o_t\mid s_t)]}_{\text{reconstruction}} - \underbrace{\mathbb{E}\big[\mathrm{KL}[q(s_t\mid\cdot)\,\|\,p(s_t\mid s_{t-1},a_{t-1})]\big]}_{\text{complexity}}\Big)`
+    await fs.writeFile(join(dir, 'eq.md'), '---\ntitle: Bound\n---\n\nThe bound:\n\n$$\n' + eq + '\n$$\n\nAnd $p(s_t \\mid s_{t-1})$ inline.\n')
+    await run.page.getByTestId('tab-note').filter({ hasText: 'Bound' }).click()
+    const rendered = run.page.getByTestId('note-rendered')
+    const block = rendered.getByTestId('math-block')
+    await expect(block).toHaveClass(/wrap/)
+    const sizes = () => rendered.evaluate((el) => {
+      const b = el.querySelector('[data-testid="math-block"]') as HTMLElement
+      const sub = el.querySelector('p .msupsub') as HTMLElement
+      const base = sub?.closest('.mord')?.firstElementChild as HTMLElement
+      return {
+        noteScroll: el.scrollWidth - el.clientWidth, blockScroll: b.scrollWidth - b.clientWidth, blockHeight: b.clientHeight,
+        // A subscript sits below the letter it belongs to.
+        subLower: sub && base ? sub.getBoundingClientRect().bottom > base.getBoundingClientRect().bottom + 2 : false
+      }
+    })
+    let m = await sizes()
+    expect(m.noteScroll).toBe(0)
+    expect(m.subLower).toBe(true)
+    // Wrapped: on more than one line, so taller than the one-line version below.
+    const wrappedHeight = m.blockHeight
+    await run.page.getByTestId('nav-settings').click()
+    await run.page.getByTestId('math-layout-select').selectOption('scroll')
+    await run.page.getByTestId('settings-save').click()
+    expect((await run.page.evaluate(() => window.api.getSettings())).mathLayout).toBe('scroll')
+    await expect(block).toHaveClass(/scroll/)
+    m = await sizes()
+    expect(m.noteScroll).toBe(0)
+    expect(m.blockScroll).toBeGreaterThan(50)
+    expect(wrappedHeight).toBeGreaterThan(m.blockHeight * 1.4)
+  })
+
   test('several notes per paper, created and edited in the app', async () => {
     const entry = await addSample(run)
     await refreshLibrary(run.page)

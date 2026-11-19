@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { resourcePath } from './resourcePath'
 import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
@@ -71,7 +72,7 @@ export async function registerIpc(getWindow: () => BrowserWindow | null): Promis
   const usageLog = new UsageLog(join(app.getPath('userData'), 'usage-logs'))
   const engine: RecognitionEngine =
     process.platform === 'win32'
-      ? new WindowsInkEngine(join(app.getAppPath(), 'resources', 'ink-sidecar.ps1'))
+      ? new WindowsInkEngine(resourcePath('ink-sidecar.ps1'))
       : new NullEngine()
   const fetcher: Fetcher = process.env.PAPER_READER_FAKE_NET ? fakeFetcher : defaultFetcher
   const resolver = new Resolver(

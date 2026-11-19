@@ -1,11 +1,13 @@
 import { ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { TRASH } from '../keys'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import { askConfirm } from '../confirm'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
-import { Annotations, MarginNote, PaperEntry, SideNote } from '../../shared/types'
+import { Annotations, MarginNote, MathLayout, PaperEntry, SideNote } from '../../shared/types'
+import { rehypeMathLayout } from './mathLayout'
 import { targetLabel } from '../../shared/inkLogic'
 import { MathText } from '../MathText'
 import { matchSpans, parseTextLink } from '../../shared/textFind'
@@ -30,11 +32,13 @@ interface Props {
   findFocus?: { path: string; occurrence: number; tick: number } | null
   /** Goes up by one for each Ctrl+N; each new value makes a side note. */
   newNoteTick?: number
+  /** How display equations too wide for the pane are shown (Settings). */
+  mathLayout?: MathLayout
 }
 
 const MARKS_TAB = '__marks__'
 
-export function RightPane({ entry, annotations, onJumpNote, onJumpTarget, onShowNote, onShowMark, onJumpPage, onJumpText, onWebLink, findQuery = '', findFocus = null, newNoteTick = 0 }: Props) {
+export function RightPane({ entry, annotations, onJumpNote, onJumpTarget, onShowNote, onShowMark, onJumpPage, onJumpText, onWebLink, findQuery = '', findFocus = null, newNoteTick = 0, mathLayout = 'wrap' }: Props) {
   const [notes, setNotes] = useState<SideNote[]>([])
   const [tab, setTab] = useState<string>(MARKS_TAB)
   useEffect(() => {
@@ -113,6 +117,7 @@ export function RightPane({ entry, annotations, onJumpNote, onJumpTarget, onShow
           findQuery={findQuery}
           findCurrent={findFocus?.path === active.path ? findFocus.occurrence : -1}
           findTick={findFocus?.tick ?? 0}
+          mathLayout={mathLayout}
           onChanged={() => void reload()}
           onDeleted={() => {
             setTab(MARKS_TAB)
@@ -304,8 +309,8 @@ function useFindHighlight(root: RefObject<HTMLElement | null>, query: string, cu
   }, [query, current, tick, ...deps])
 }
 
-function NoteEditor({ note, onChanged, onDeleted, findQuery, findCurrent, findTick, ...links }: {
-  note: SideNote; onChanged: () => void; onDeleted: () => void; findQuery: string; findCurrent: number; findTick: number
+function NoteEditor({ note, onChanged, onDeleted, findQuery, findCurrent, findTick, mathLayout, ...links }: {
+  note: SideNote; onChanged: () => void; onDeleted: () => void; findQuery: string; findCurrent: number; findTick: number; mathLayout: MathLayout
 } & LinkProps) {
   const components = useMemo(() => ({
     a: ({ href, children }: { href?: string; children?: ReactNode }) => <NoteLink href={href} {...links}>{children}</NoteLink>
@@ -316,7 +321,8 @@ function NoteEditor({ note, onChanged, onDeleted, findQuery, findCurrent, findTi
   const [title, setTitle] = useState(note.title)
   const dirty = useRef(false)
   const rootRef = useRef<HTMLDivElement>(null)
-  useFindHighlight(rootRef, editing ? '' : findQuery, findCurrent, findTick, [draft, title, editing, note.title])
+  useFindHighlight(rootRef, editing ? '' : findQuery, findCurrent, findTick, [draft, title, editing, note.title, mathLayout])
+  const rehypePlugins = useMemo(() => [[rehypeMathLayout, { mode: mathLayout }], rehypeKatex] as never, [mathLayout])
 
   // A file changed from outside (by Claude Code, say) shows up unless it is being edited here.
   useEffect(() => {
@@ -357,7 +363,7 @@ function NoteEditor({ note, onChanged, onDeleted, findQuery, findCurrent, findTi
           <button className="danger" data-testid="note-file-delete" onClick={() => void (async () => {
             const ok = await askConfirm({
               title: `Delete "${note.title}"?`,
-              body: 'The note file goes to the Recycle Bin, where it can be restored.',
+              body: `The note file goes to the ${TRASH}, where it can be restored.`,
               action: 'Delete side note'
             })
             if (ok) await window.api.deleteSideNote(note.path).then(onDeleted)
@@ -371,7 +377,7 @@ function NoteEditor({ note, onChanged, onDeleted, findQuery, findCurrent, findTi
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish() } }} />
       ) : (
         <div className="markdown" data-testid="note-rendered">
-          <Markdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} urlTransform={noteUrl} components={components}>{draft}</Markdown>
+          <Markdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={rehypePlugins} urlTransform={noteUrl} components={components}>{draft}</Markdown>
         </div>
       )}
     </div>

@@ -14,3 +14,6 @@ export function mod(e: KeyboardEvent): boolean {
 export function plain(e: KeyboardEvent): boolean {
   return !e.ctrlKey && !e.metaKey && !e.altKey
 }
+
+/** Where deleted files go: the Recycle Bin on Windows, the Trash elsewhere. */
+export const TRASH = /Windows/i.test(navigator.userAgent) ? 'Recycle Bin' : 'Trash'

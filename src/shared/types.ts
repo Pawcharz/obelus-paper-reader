@@ -186,9 +186,16 @@ export interface AppSettings {
    * fingers scroll and zoom.
    */
   inputMode?: InputMode
+  /**
+   * How a display equation too wide for the notes pane is shown: "wrap" breaks it onto new lines
+   * at relations and operators (the default), "scroll" keeps one line that scrolls sideways.
+   */
+  mathLayout?: MathLayout
 }
 
 export type InputMode = 'pen' | 'touch'
+
+export type MathLayout = 'wrap' | 'scroll'
 
 /** How an action was started. */
 export type UsageVia = 'key' | 'pen' | 'touch' | 'mouse' | 'app'

@@ -1,0 +1,45 @@
+# Installers for Windows and Linux. Build with `npm run dist` on the system you are building for;
+# GitHub Actions builds both (.github/workflows/build.yml).
+appId: com.obelus.reader
+productName: Obelus
+copyright: Copyright © 2026 Obelus contributors
+
+directories:
+  output: dist
+  buildResources: resources
+
+# The compiled app only; node_modules is added from "dependencies" by electron-builder.
+files:
+  - out/**
+  - package.json
+
+# Outside the app archive, because PowerShell cannot read a script inside it.
+extraResources:
+  - from: resources
+    to: .
+    filter:
+      - ink-sidecar.ps1
+      - icon.png
+      - icon.ico
+
+# Unsigned on purpose: no paid certificate. Windows shows SmartScreen once ("More info", "Run anyway").
+win:
+  icon: resources/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: Obelus-Setup-${version}.${ext}
+
+linux:
+  icon: resources/icon.png
+  category: Office
+  synopsis: Read papers with a pen
+  description: Read papers with a pen; margin notes become machine-readable text linked to what they refer to.
+  target:
+    - target: AppImage
+      arch: [x64]
+  artifactName: Obelus-${version}-${arch}.${ext}

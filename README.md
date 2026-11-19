@@ -1,6 +1,10 @@
-# Paper Reader
+<img src="resources/obelus-icon.svg" alt="Obelus logo" width="96" align="right">
 
-A pen-first reader for research papers, for Windows tablets and 2-in-1 laptops.
+# Obelus
+
+*Formerly the working title "Paper Reader".* An obelus is the mark ancient editors put beside a passage to say "look again". The app's underline works the same way.
+
+A pen-first reader for research papers, for tablets and 2-in-1 laptops running Windows or Linux.
 
 https://github.com/user-attachments/assets/f3120f36-1567-4658-9d77-3fa9004a6ce5
 
@@ -8,7 +12,7 @@ https://github.com/user-attachments/assets/f3120f36-1567-4658-9d77-3fa9004a6ce5
 
 Write in the margins as you would on paper. Your handwriting stays as ink and is turned into text in the background. Underline or circle what a note is about, and the note is linked to those exact words, equation or figure. Everything is saved as plain files in a folder you choose: PDFs, ink, notes in Markdown and reading maps in JSON. Other tools, and AI agents such as Claude Code, can read and write them too.
 
-> **Status:** a working personal tool, used daily, but young. It runs on **Windows only**, because handwriting recognition uses the Windows Ink recognizers built into Windows. Expect rough edges.
+> **Status:** a working personal tool, used daily, but young. It runs on **Windows and Linux**, but handwriting becomes text **on Windows only** for now, because recognition uses the Windows Ink recognizers built into Windows. On Linux your ink is kept as drawn. Expect rough edges.
 
 ## What it does
 
@@ -31,7 +35,7 @@ Write in the margins as you would on paper. Your handwriting stays as ink and is
 - **Find** searches the paper text, your margin notes and your side notes.
 
 **Side notes and maps**
-- Each paper has a notes pane with **side notes**: Markdown with maths, written by you or by an AI agent. They can link to your notes, your marks, a page, words on a page (`[Eq. 3](<text:4:Training objective>)`), or another paper at a page.
+- Each paper has a notes pane with **side notes**: Markdown with maths, written by you or by an AI agent. They can link to your notes, your marks, a page, words on a page (`[Eq. 3](<text:4:Training objective>)`), or another paper at a page. Long equations wrap onto new lines, or scroll sideways if you prefer (**Settings**).
 - **Maps** lay out papers as boxes with arrows between them, in groups, with read and unread shown at a glance.
 
 **Pen, finger and mouse**
@@ -40,24 +44,32 @@ Write in the margins as you would on paper. Your handwriting stays as ink and is
 - **Lock scrollbar** hides the scrollbar, so a hand resting on the screen edge can't jump pages.
 - Every action works with pen and finger alone; keyboard shortcuts are extras.
 
-## Requirements
+## Install
 
-- **Windows 10 or 11.**
-- **At least one handwriting language.** Windows → Settings → Time & language → Language & region → your language → Language options → install **Handwriting**. Without one, ink is still saved but not turned into text.
-- **[Node.js](https://nodejs.org/)** with npm, to build the app (developed with Node.js 26; a recent release should work).
-- **Git**, to get the code.
-- A pen is not required, but the app is designed for one.
+Download the installer from the [latest release](https://github.com/Pawcharz/paper-reader/releases/latest):
 
-## Getting started
+- **Windows 10 or 11:** `Obelus-Setup-<version>.exe`. It is not signed, so Windows SmartScreen warns once: choose **More info**, then **Run anyway**.
+- **Linux (x64):** `Obelus-<version>-x86_64.AppImage`. Make it executable (`chmod +x Obelus-*.AppImage`) and run it.
+
+For handwriting to become text on Windows, install at least one handwriting language: Windows → Settings → Time & language → Language & region → your language → Language options → install **Handwriting**. Without one, ink is still saved but not turned into text.
+
+A pen is not required, but the app is designed for one. On Linux, a pen works in an X11 session; under Wayland some Electron apps ignore pen input.
+
+### Build from source
+
+You need **[Node.js](https://nodejs.org/)** with npm (developed with Node.js 26) and **Git**.
 
 ```
 git clone https://github.com/Pawcharz/paper-reader.git
 cd paper-reader
 npm ci
-start.cmd
+start.cmd        on Windows
+./start.sh       on Linux
 ```
 
-`npm ci` downloads the dependencies, including Electron (a few hundred MB). `start.cmd` builds the app and starts it; you can also double-click it in Explorer.
+`npm ci` downloads the dependencies, including Electron (a few hundred MB). The start script builds the app and starts it. `npm run dist` builds an installer for the system you are on, into `dist/`.
+
+## Getting started
 
 On first start, the app asks where to keep your library. It suggests `OneDrive\Paper Library`, but any folder works. Then add a paper with **Add** in the Library: paste an arXiv ID such as `1706.03762`, a DOI, or choose a PDF.
 
@@ -80,7 +92,7 @@ Paper Library/
       regions/*.png           pictures of marked figures and equations
 ```
 
-Each person who opens a shared library writes only into their own `people/` folder, so a library can be shared through OneDrive or similar. Settings are kept in `%APPDATA%\paper-reader`, and previews of cited papers in `%LOCALAPPDATA%\PaperReader\previews`, which are cleaned up automatically.
+Each person who opens a shared library writes only into their own `people/` folder, so a library can be shared through OneDrive or similar. Settings are kept in `%APPDATA%\paper-reader` (on Linux `~/.config/paper-reader`), and previews of cited papers in `%LOCALAPPDATA%\PaperReader\previews`, which are cleaned up automatically.
 
 ### Working with AI agents
 
@@ -119,7 +131,10 @@ npm run dev          the app with hot reload
 npm test             unit tests (Vitest)
 npm run test:e2e     builds the app and drives it with Playwright, using simulated pen events and a fake network
 npm run typecheck    TypeScript
+npm run dist         an installer for this system, into dist/
 ```
+
+GitHub Actions runs the checks and builds both installers on every push. Pushing a version tag (`v0.2.0`) builds them onto a draft release, which is published by hand.
 
 The code is TypeScript, with Electron, React and PDF.js:
 
@@ -135,7 +150,9 @@ The code is TypeScript, with Electron, React and PDF.js:
 
 ## Known limits
 
-- Windows only, as the handwriting recognition comes from Windows.
+- Handwriting recognition on Windows only, as it comes from Windows. A local recognizer for Linux is planned.
+- No macOS build.
+- The installers are not signed.
 - Handwritten maths is read as text, often poorly.
 - Tested mostly on one pen tablet, by one person.
 

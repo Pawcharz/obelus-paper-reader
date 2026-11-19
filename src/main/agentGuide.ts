@@ -13,7 +13,7 @@ export const GUIDE_MARKER =
 export const AGENT_GUIDE = `${GUIDE_MARKER}
 # Working with this Paper Library
 
-This folder is the library of the Paper Reader app. The reader reads papers with a pen; you can read
+This folder is the library of the Obelus app. The reader reads papers with a pen; you can read
 their notes and write side notes that the app shows next to the paper.
 
 ## Where things are

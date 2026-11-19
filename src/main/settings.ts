@@ -30,7 +30,8 @@ export function defaultSettings(): AppSettings {
     marginWidth: DEFAULT_MARGIN_WIDTH,
     marginShare: 1,
     usageLog: false,
-    inputMode: 'pen'
+    inputMode: 'pen',
+    mathLayout: 'wrap'
   }
 }
 

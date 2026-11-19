@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AppSettings, InputMode } from '../../shared/types'
+import { AppSettings, InputMode, MathLayout } from '../../shared/types'
 
 interface Props {
   settings: AppSettings
@@ -17,6 +17,7 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
   const [gb, setGb] = useState(settings.cacheMaxBytes / 1024 ** 3)
   const [marginShare, setMarginShare] = useState(settings.marginShare ?? 1)
   const [inputMode, setInputMode] = useState<InputMode>(settings.inputMode ?? 'pen')
+  const [mathLayout, setMathLayout] = useState<MathLayout>(settings.mathLayout ?? 'wrap')
 
   useEffect(() => {
     void window.api.listRecognizers().then(setRecognizers)
@@ -32,7 +33,8 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
         cacheMaxAgeDays: Math.max(0.1, days),
         cacheMaxBytes: Math.max(0.05, gb) * 1024 ** 3,
         marginShare,
-        inputMode
+        inputMode,
+        mathLayout
       })
     )
     onClose()
@@ -66,6 +68,13 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
             <option value="0.5">50%</option>
             <option value="0.25">25%</option>
             <option value="0">None</option>
+          </select>
+        </label>
+        <label>
+          Long equations in side notes
+          <select value={mathLayout} data-testid="math-layout-select" onChange={(e) => setMathLayout(e.target.value as MathLayout)}>
+            <option value="wrap">Wrap onto new lines (default)</option>
+            <option value="scroll">Scroll sideways</option>
           </select>
         </label>
         <label>

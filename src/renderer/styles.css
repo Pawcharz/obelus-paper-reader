@@ -23,8 +23,7 @@ input, select, textarea { font: inherit; border: 1px solid var(--line); border-r
 .main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 /* Side rail: the places and tools, always in view whatever is open. */
 .rail { flex: none; width: 64px; background: #2c2a26; color: #ddd; display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 8px 5px; }
-.rail .spacer { flex: 1; }
-.rail-btn { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 2px 6px; min-height: 54px; border: none; border-radius: 8px; background: transparent; color: #cfc9bf; }
+.rail .spacer { flex: 1; }.rail-btn { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 2px 6px; min-height: 54px; border: none; border-radius: 8px; background: transparent; color: #cfc9bf; }
 .rail-btn:hover:not(:disabled) { background: #3b3831; color: #fff; }
 .rail-btn.on { background: #48443c; color: #fff; }
 .rail-btn.log-toggle { color: #8f8a80; }
@@ -146,9 +145,15 @@ input, select, textarea { font: inherit; border: 1px solid var(--line); border-r
 .note-actions button { padding: 2px 7px; font-size: 12px; }
 .generated { color: var(--muted); font-size: 12px; }
 .note-text-input { flex: 1; resize: none; font-family: Consolas, monospace; font-size: 13px; }
-.markdown { flex: 1; overflow: auto; line-height: 1.5; }
-.markdown pre { background: #f6f4ef; padding: 8px; overflow: auto; }
-.markdown table { border-collapse: collapse; }
+/* The note is never wider than the pane: wide equations, code and tables scroll on their own. */
+.markdown { flex: 1; min-width: 0; overflow-x: hidden; overflow-y: auto; line-height: 1.5; overflow-wrap: anywhere; }
+.markdown pre { background: #f6f4ef; padding: 8px; overflow: auto; max-width: 100%; }
+.markdown table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; }
+.markdown .math-block { max-width: 100%; overflow-x: auto; overflow-y: hidden; margin: 0.7em 0; padding: 2px 0 4px; overflow-wrap: normal; }
+.markdown .math-block .katex-display { margin: 0; overflow: visible; }
+/* Display style set in running text, so it breaks after relations and operators; centred while it fits. */
+.markdown .math-block.wrap { text-align: center; }
+.markdown .math-block.wrap > .katex { white-space: normal; text-align: left; }
 .markdown td, .markdown th { border: 1px solid var(--line); padding: 3px 6px; }
 
 .library { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 14px 18px; gap: 10px; }

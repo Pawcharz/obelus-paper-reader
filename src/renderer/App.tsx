@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppSettings, PaperEntry, PreviewItem, paperLabel } from '../shared/types'
 import { Reader, ReaderSource } from './reader/Reader'
-import { GearIcon, LibraryIcon, MapsIcon, RecordIcon } from './icons'
+import { GearIcon, LibraryIcon, MapsIcon, ObelusLogo, RecordIcon } from './icons'
 
 /** One or two letters for a workspace's badge in the side rail. */
 function initials(name: string): string {
@@ -346,6 +346,7 @@ export function App() {
   if (settings.workspaces.length === 0) {
     return (
       <div data-testid="app-root" className="app">
+        <div style={{ position: 'absolute', top: 16, left: 16 }}><ObelusLogo size={40} /></div>
         <Welcome onDone={() => void window.api.getSettings().then(setSettings)} />
       </div>
     )
@@ -424,6 +425,7 @@ export function App() {
               active={view.kind === 'doc' && view.key === t.key}
               marginShare={settings.marginShare ?? 1}
               inputMode={settings.inputMode ?? 'pen'}
+              mathLayout={settings.mathLayout ?? 'wrap'}
               onLookUp={(text, citingId, fromMapId, page) => void lookUp(t.key, text, citingId, fromMapId, page)}
               onAddToMap={(text, citingId, fromMapId) => void addToMap(text, citingId, fromMapId)}
               onPreviewAdded={onPreviewAdded}

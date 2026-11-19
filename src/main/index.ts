@@ -2,8 +2,11 @@ import { app, BrowserWindow, Menu, net, protocol, shell } from 'electron'
 import { join, normalize, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { registerIpc } from './ipc'
+import { windowIconPath } from './resourcePath'
 
-if (process.env.PAPER_READER_USERDATA) app.setPath('userData', process.env.PAPER_READER_USERDATA)
+// Settings stay in the same folder whether the app runs from source (named paper-reader) or is
+// installed (named Obelus), so installing it keeps your library and settings.
+app.setPath('userData', process.env.PAPER_READER_USERDATA ?? join(app.getPath('appData'), 'paper-reader'))
 
 const APP_ORIGIN = 'app://paper'
 
@@ -34,7 +37,9 @@ function createWindow(): BrowserWindow {
     height: 950,
     show: false,
     autoHideMenuBar: true,
-    title: 'Paper Reader',
+    title: 'Obelus',
+    // Window and taskbar icon; the files are built from resources/obelus-icon.svg.
+    icon: windowIconPath(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -66,6 +71,9 @@ function createWindow(): BrowserWindow {
 void app.whenReady().then(async () => {
   // No built-in menu: its shortcuts, such as Ctrl+W closing the whole window, belong to the app.
   Menu.setApplicationMenu(null)
+  // Gives Windows its own taskbar identity, so the taskbar shows this icon and not Electron's.
+  // The same id as appId in electron-builder.yml, so the installed app keeps it.
+  app.setAppUserModelId('com.obelus.reader')
   serveRenderer()
   const dispose = await registerIpc(() => BrowserWindow.getAllWindows()[0] ?? null)
   createWindow()

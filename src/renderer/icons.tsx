@@ -2,6 +2,21 @@
 
 const base = { width: 22, height: 22, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
 
+/** The app's logo: an obelus, the editor's mark for "look again at this passage". Same drawing as resources/obelus-icon.svg. */
+export function ObelusLogo({ size = 34 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" role="img" aria-label="Obelus" className="app-logo">
+      <rect width="64" height="64" rx="14" fill="#1B2440" />
+      <rect x=".5" y=".5" width="63" height="63" rx="13.5" fill="none" stroke="#fff" strokeOpacity=".16" />
+      <g transform="rotate(-12 32 32)">
+        <rect x="11" y="28.5" width="42" height="7" rx="3.5" fill="#F5F2EA" />
+        <circle cx="32" cy="14.5" r="6.5" fill="#FF7A2F" />
+        <circle cx="32" cy="49.5" r="6.5" fill="#FF7A2F" />
+      </g>
+    </svg>
+  )
+}
+
 export function LibraryIcon() {
   return (
     <svg {...base}>

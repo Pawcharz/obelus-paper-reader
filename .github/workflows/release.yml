@@ -1,0 +1,63 @@
+# Pushing a version tag (v0.1.0, ...) builds both installers and puts them on a draft GitHub
+# Release. Nothing is public until someone presses Publish on the draft.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  installers:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+            files: dist/*.exe
+          - os: ubuntu-latest
+            script: dist:linux
+            files: dist/*.AppImage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run ${{ matrix.script }}
+        env:
+          # No signing certificate: the installers are unsigned on purpose.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+  draft:
+    needs: installers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          ## Install
+
+          - **Windows:** download `Obelus-Setup-*.exe` and run it. It is not signed, so Windows SmartScreen warns once: choose **More info**, then **Run anyway**. For handwriting to become text, install Windows' handwriting support for your language (Settings → Time & language → Language & region → your language → Language options → Handwriting).
+          - **Linux:** download `Obelus-*.AppImage`, make it executable (`chmod +x Obelus-*.AppImage`) and run it. Handwriting stays as ink on Linux for now: there is no recognizer yet.
+          EOF
+          gh release create "$GITHUB_REF_NAME" installers/* --draft --title "Obelus $GITHUB_REF_NAME" --notes-file notes.md --generate-notes
