@@ -1,0 +1,55 @@
+name: Something went wrong
+description: A crash, a wrong result, or something that didn't do what you expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Obelus! A few details help me reproduce the problem. Screenshots or a short screen recording help most.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+      placeholder: I selected a sentence, pressed Note, typed… and the note appeared on the wrong page.
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux (X11)
+        - Linux (Wayland)
+        - Linux (not sure which)
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      description: Shown at the bottom of the left rail.
+      options:
+        - Pen mode (pen or touchscreen)
+        - PC mode (mouse and keyboard)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The installer's name says it, e.g. Obelus-Setup-0.2.0.exe. Or "built from source" with the commit.
+      placeholder: 0.2.0
+  - type: input
+    id: device
+    attributes:
+      label: Device and pen (if any)
+      placeholder: Lenovo Yoga 7 with its pen / desktop with a mouse
+  - type: input
+    id: paper
+    attributes:
+      label: Paper it happened on (if it matters)
+      description: An arXiv ID or link, if the problem is about one paper.
+      placeholder: arXiv 1706.03762

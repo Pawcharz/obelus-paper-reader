@@ -1,0 +1,20 @@
+name: Idea or wish
+description: Something that would make reading papers with Obelus better.
+labels: [idea]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to do?
+      description: Describe what you were trying to do when you missed it. The situation matters more than the solution.
+      placeholder: When I read a paper with many equations, I'd like to…
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Pen mode (pen or touchscreen)
+        - PC mode (mouse and keyboard)
+        - Both

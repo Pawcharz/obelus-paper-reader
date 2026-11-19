@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question, or just want to say what you think
+    url: https://github.com/Pawcharz/obelus-paper-reader/discussions
+    about: Ask how to do something, share how you read papers, or tell me what you liked and didn't.
