@@ -6,9 +6,9 @@
 
 A pen-first reader for research papers, for tablets and 2-in-1 laptops running Windows or Linux. On a computer without a pen, **PC mode** does the same with a mouse and keyboard.
 
-https://github.com/user-attachments/assets/99075826-fdaa-479a-ad71-d672b8879ec3
+https://github.com/user-attachments/assets/2dd16f64-3886-4478-8a1e-a4566ecec201
 
-*A 90-second demo.*
+*A two-minute demo: the pen first, then mouse and keyboard.*
 
 Write in the margins as you would on paper. Your handwriting stays as ink and is turned into text in the background. Underline or circle what a note is about, and the note is linked to those exact words, equation or figure. Everything is saved as plain files in a folder you choose: PDFs, ink, notes in Markdown and reading maps in JSON. Other tools, and AI agents such as Claude Code, can read and write them too.
 
