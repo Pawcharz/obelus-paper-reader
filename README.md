@@ -6,7 +6,7 @@
 
 A pen-first reader for research papers, for tablets and 2-in-1 laptops running Windows or Linux.
 
-https://github.com/user-attachments/assets/f3120f36-1567-4658-9d77-3fa9004a6ce5
+https://github.com/user-attachments/assets/99075826-fdaa-479a-ad71-d672b8879ec3
 
 *A 90-second demo.*
 
