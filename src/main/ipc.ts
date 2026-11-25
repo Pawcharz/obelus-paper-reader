@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { resourcePath } from './resourcePath'
+import { folderMovedOnce } from './appFolders'
 import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
@@ -47,7 +48,9 @@ import { currentAuthorId } from '../shared/account'
 const PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 function previewsDir(): string {
-  const base = process.env.PAPER_READER_CACHE ?? join(process.env.LOCALAPPDATA ?? app.getPath('userData'), 'PaperReader')
+  // Windows: %LOCALAPPDATA%\Obelus (PaperReader before 0.3.1, moved once). Elsewhere inside the settings folder.
+  const local = process.env.LOCALAPPDATA
+  const base = process.env.PAPER_READER_CACHE ?? (local ? folderMovedOnce(local, 'PaperReader', 'Obelus') : join(app.getPath('userData'), 'PaperReader'))
   return join(base, 'previews')
 }
 

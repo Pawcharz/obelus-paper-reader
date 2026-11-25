@@ -1,12 +1,14 @@
 import { app, BrowserWindow, Menu, net, protocol, screen, shell } from 'electron'
 import { join, normalize, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { folderMovedOnce } from './appFolders'
 import { registerIpc } from './ipc'
 import { windowIconPath } from './resourcePath'
 
-// Settings stay in the same folder whether the app runs from source (named paper-reader) or is
-// installed (named Obelus), so installing it keeps your library and settings.
-app.setPath('userData', process.env.PAPER_READER_USERDATA ?? join(app.getPath('appData'), 'paper-reader'))
+// Settings stay in the same folder whether the app runs from source (npm name paper-reader) or is
+// installed: %APPDATA%\Obelus (Linux ~/.config/Obelus). Before 0.3.1 it was named paper-reader;
+// that folder is moved here on the first start, so the library, account and models come along.
+app.setPath('userData', process.env.PAPER_READER_USERDATA ?? folderMovedOnce(app.getPath('appData'), 'paper-reader', 'Obelus'))
 
 const APP_ORIGIN = 'app://paper'
 

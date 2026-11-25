@@ -320,7 +320,7 @@ button.math-choice:hover { border-color: #2f5bd3; }
 .pages-scroll.no-bar::-webkit-scrollbar { display: none; }
 .pen-sizes button { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; }
 .pen-dot { display: inline-block; border-radius: 50%; background: currentColor; }
-.recognizer-choice { border: 1px solid #d6d0c4; border-radius: 6px; padding: 6px 10px 8px; margin: 8px 0; max-height: 220px; overflow: auto; }
+.recognizer-choice { border: 1px solid #d6d0c4; border-radius: 6px; padding: 6px 10px 8px; margin: 8px 0; max-height: 220px; overflow: auto; flex: none; }
 .recognizer-choice legend { font-size: 13px; color: #5d574e; padding: 0 4px; }
 .recognizer-choice .check { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 3px 0; }
 /* The part of a page on screen drawn again at full sharpness when zoomed in a long way. */
@@ -371,7 +371,8 @@ button.math-choice:hover { border-color: #2f5bd3; }
 .account-pop .account legend { font-size: 14px; font-weight: 600; color: inherit; padding: 0 0 6px; }
 
 /* Local models (Settings → Reading on this computer, and the download offer in the reader). */
-.local-models { border: 1px solid #d6d0c4; border-radius: 6px; padding: 6px 10px 8px; margin: 8px 0; }
+/* flex: none: in a dialog taller than the window, the dialog scrolls instead of squashing these. */
+.local-models { border: 1px solid #d6d0c4; border-radius: 6px; padding: 6px 10px 8px; margin: 8px 0; flex: none; }
 .local-models legend { font-size: 13px; color: #5d574e; padding: 0 4px; }
 .local-models .check { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 3px 0; }
 .local-model { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; }

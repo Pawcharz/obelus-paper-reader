@@ -127,7 +127,7 @@ Paper Library/
       regions/*.png           pictures of marked figures and equations
 ```
 
-Each person who opens a shared library writes only into their own `people/` folder, so a library can be shared through OneDrive or similar. Settings live in `%APPDATA%\paper-reader` (Linux: `~/.config/paper-reader`).
+Each person who opens a shared library writes only into their own `people/` folder, so a library can be shared through OneDrive or similar. Settings live in `%APPDATA%\Obelus` (Linux: `~/.config/Obelus`). Before 0.3.1 they were in a folder named `paper-reader`, which the app moves there on its first start.
 
 **With AI agents:** open the library folder in Claude Code or another agent. The app's `AGENTS.md` explains the files, how to read your notes, how to write side notes and which links the app understands. A guide you edit by hand is left alone once you remove its first line.
 

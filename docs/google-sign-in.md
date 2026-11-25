@@ -44,7 +44,7 @@ Overview, Branding, Audience, Clients and Data Access.
    While in Testing only listed test users can sign in, and Google caps such an app at 100 users
    for the project's lifetime.
 6. **Your own PC (optional).** To use the client before a release has it built in, save the JSON as
-   `%APPDATA%\paper-reader\google-oauth.json`: a file there wins over the client built into the app.
+   `%APPDATA%\Obelus\google-oauth.json` (`paper-reader` before 0.3.1): a file there wins over the client built into the app.
 7. **Build it into the installers.** In the public repo (`Pawcharz/obelus-paper-reader`) → Settings
    → Secrets and variables → Actions, add `MAIN_VITE_GOOGLE_CLIENT_ID` and
    `MAIN_VITE_GOOGLE_CLIENT_SECRET` from the JSON (`client_id`, `client_secret`). Or, from a terminal:
