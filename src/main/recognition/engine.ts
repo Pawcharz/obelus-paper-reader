@@ -1,4 +1,4 @@
-import { RecognitionResult } from '../../shared/types'
+import { RecognitionResult, RecognizedWord, Rect } from '../../shared/types'
 
 /** One stroke as a flat list: x, y, x, y, ... */
 export type FlatStroke = number[]
@@ -43,19 +43,39 @@ export class NullEngine implements RecognitionEngine {
 }
 
 /** Joins per-word alternatives into text, keeping one line of text per written line. */
-export function joinLines(lines: { words: { alts: string[] }[] }[]): {
+export function joinLines(lines: { words: { alts: string[]; box?: number[] }[] }[]): {
   text: string
   candidates: string[][]
+  words: RecognizedWord[]
 } {
   const candidates: string[][] = []
+  const recognized: RecognizedWord[] = []
   const text = lines
-    .map((l) => {
+    .map((l, line) => {
       const words = l.words.filter((w) => w.alts.length > 0)
       candidates.push(...words.map((w) => w.alts))
+      for (const w of words) {
+        const b = w.box
+        recognized.push({ line, text: w.alts[0], ...(b && b.length === 4 ? { box: [b[0], b[1], b[2], b[3]] as Rect } : {}) })
+      }
       return words.map((w) => w.alts[0]).join(' ')
     })
     .join('\n')
-  return { text, candidates }
+  return { text, candidates, words: recognized }
+}
+
+/** Marks which words are real (spelled right in a ticked language, or found in the paper). */
+export function markRealWords(words: RecognizedWord[], isWord: (w: string) => boolean, inPaper: (w: string) => boolean): RecognizedWord[] {
+  return words.map((w) => {
+    // Only sentence punctuation and quotes may surround a real word. With brackets, digits or symbols
+    // attached ("1(sei", "te)") it is maths read as letters, even if the letters spell a word.
+    let bare = w.text.replace(/^["'“‘.\-–—•*]+/u, '').replace(/[.,;:!?"'”’/\\-]+$/u, '')
+    // A bracket around a word is punctuation for longer words ("(semantically", "letters)."), but
+    // around short letter runs it is usually maths ("(sec" from (s_t; …), "te)").
+    const unbracketed = bare.replace(/^\(/, '').replace(/\)[.,;:!?]*$/, '')
+    if (unbracketed !== bare) bare = unbracketed.length >= 4 ? unbracketed : '('
+    return { ...w, real: bare.length > 0 && /^\p{L}+(?:[-'’]\p{L}+)*$/u.test(bare) && (isWord(bare) || inPaper(bare.toLowerCase())) }
+  })
 }
 
 /**

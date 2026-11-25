@@ -51,7 +51,9 @@ export async function launch(existing?: { dir: string; settings?: boolean }): Pr
       PAPER_READER_USERDATA: userData,
       PAPER_READER_CACHE: cache,
       PAPER_READER_FAKE_NET: fixtures,
-      PAPER_READER_HIDDEN: '1'
+      PAPER_READER_HIDDEN: '1',
+      // Test windows go to this screen (left or right) when set.
+      PAPER_READER_DISPLAY: process.env.PAPER_READER_DISPLAY ?? ''
     }
   })
   const page = await app.firstWindow()

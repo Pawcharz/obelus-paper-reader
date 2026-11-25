@@ -1,4 +1,5 @@
-import { ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ReactNode, RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { rememberedScroll, rememberedTab, rememberScroll, rememberTab } from './paneMemory'
 import { TRASH } from '../keys'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import { askConfirm } from '../confirm'
@@ -34,17 +35,24 @@ interface Props {
   newNoteTick?: number
   /** How display equations too wide for the pane are shown (Settings). */
   mathLayout?: MathLayout
+  /** Notes waiting for or in recognition (a local model can take ~10 s): shown as "reading…". */
+  readingIds?: ReadonlySet<string>
 }
 
 const MARKS_TAB = '__marks__'
 
-export function RightPane({ entry, annotations, onJumpNote, onJumpTarget, onShowNote, onShowMark, onJumpPage, onJumpText, onWebLink, findQuery = '', findFocus = null, newNoteTick = 0, mathLayout = 'wrap' }: Props) {
+export function RightPane({ entry, annotations, onJumpNote, onJumpTarget, onShowNote, onShowMark, onJumpPage, onJumpText, onWebLink, findQuery = '', findFocus = null, newNoteTick = 0, mathLayout = 'wrap', readingIds }: Props) {
+  const paperId = entry.meta.id
   const [notes, setNotes] = useState<SideNote[]>([])
-  const [tab, setTab] = useState<string>(MARKS_TAB)
+  // Opens on the tab showing when the pane was last closed for this paper.
+  const [tab, setTab] = useState<string>(() => rememberedTab(paperId) || MARKS_TAB)
+  const [loaded, setLoaded] = useState(false)
   useEffect(() => {
     if (findFocus) setTab(findFocus.path)
   }, [findFocus])
-  const paperId = entry.meta.id
+  useEffect(() => {
+    if (loaded) rememberTab(paperId, tab)
+  }, [paperId, tab, loaded])
   const initialised = useRef(false)
 
   const reload = useCallback(async () => {
@@ -55,13 +63,17 @@ export function RightPane({ entry, annotations, onJumpNote, onJumpTarget, onShow
 
   useEffect(() => {
     initialised.current = false
+    setLoaded(false)
     void reload().then((list) => {
       if (initialised.current) return
       initialised.current = true
+      const last = rememberedTab(paperId)
       const pinned = list.find((n) => n.pinned)
-      setTab(pinned ? pinned.path : MARKS_TAB)
+      if (last === MARKS_TAB || list.some((n) => n.path === last)) setTab(last)
+      else setTab(pinned ? pinned.path : MARKS_TAB)
+      setLoaded(true)
     })
-  }, [reload])
+  }, [reload, paperId])
 
   useEffect(() => {
     const folder = entry.folder.replace(/\\/g, '/')
@@ -102,11 +114,14 @@ export function RightPane({ entry, annotations, onJumpNote, onJumpTarget, onShow
         ))}
         <button className="tab add" onClick={() => void addNote()} data-testid="add-note" title="New side note (Ctrl+N)">+</button>
       </div>
-      {tab === MARKS_TAB || !active ? (
-        <MarksList annotations={annotations} onJumpNote={onJumpNote} onJumpTarget={onJumpTarget} />
+      {!loaded ? (
+        <div className="marks" />
+      ) : tab === MARKS_TAB || !active ? (
+        <MarksList paperId={paperId} annotations={annotations} onJumpNote={onJumpNote} onJumpTarget={onJumpTarget} readingIds={readingIds} />
       ) : (
         <NoteEditor
           key={active.path}
+          paperId={paperId}
           note={active}
           annotations={annotations}
           onJumpNote={onShowNote}
@@ -129,14 +144,62 @@ export function RightPane({ entry, annotations, onJumpNote, onJumpTarget, onShow
   )
 }
 
+/**
+ * Keeps how far a scrolling area of the pane is scrolled, and puts it back when the area appears
+ * again: after the pane was closed and opened, another tab was shown, or the paper reopened.
+ */
+function useRememberedScroll(ref: RefObject<HTMLElement | null>, paperId: string, key: string, active = true): void {
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || !active) return
+    const target = rememberedScroll(paperId, key)
+    let userMoved = false
+    let restoring = target > 0
+    let frame = 0
+    const started = performance.now()
+    // Content such as pictures can still be growing: while the place is out of reach, keep trying briefly.
+    const apply = (): void => {
+      if (userMoved) { restoring = false; return }
+      const reachable = el.scrollHeight - el.clientHeight >= target - 1
+      el.scrollTop = target
+      if (reachable || performance.now() - started > 1500) restoring = false
+      else frame = requestAnimationFrame(apply)
+    }
+    if (restoring) apply()
+    const onScroll = (): void => {
+      // A scroll made while putting the place back is not the reader's, so it is not kept.
+      if (restoring && !userMoved) return
+      rememberScroll(paperId, key, el.scrollTop)
+    }
+    const stop = (): void => { userMoved = true; restoring = false }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', stop, { passive: true })
+    el.addEventListener('pointerdown', stop, { passive: true })
+    el.addEventListener('touchstart', stop, { passive: true })
+    el.addEventListener('keydown', stop)
+    return () => {
+      cancelAnimationFrame(frame)
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', stop)
+      el.removeEventListener('pointerdown', stop)
+      el.removeEventListener('touchstart', stop)
+      el.removeEventListener('keydown', stop)
+    }
+  }, [ref, paperId, key, active])
+}
+
 function MarksList({
+  paperId,
   annotations,
   onJumpNote,
-  onJumpTarget
+  onJumpTarget,
+  readingIds
 }: {
+  paperId: string
   annotations: Annotations | null
   onJumpNote: (n: MarginNote) => void
   onJumpTarget: (id: string) => void
+  readingIds?: ReadonlySet<string>
 }) {
   const [onlyNoTarget, setOnlyNoTarget] = useState(false)
   const notes = useMemo(
@@ -152,6 +215,8 @@ function MarksList({
     if (last && last[0] === n.page) last[1].push(n)
     else byPage.push([n.page, [n]])
   }
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useRememberedScroll(scrollRef, paperId, onlyNoTarget ? `${MARKS_TAB}:no-target` : MARKS_TAB)
   const targets = annotations?.targets ?? []
   const quote = (id: string): string => {
     const t = targets.find((x) => x.id === id)
@@ -162,7 +227,7 @@ function MarksList({
     <li key={n.id} className="mark-item" data-testid="mark-item">
       <button className="link-row" onClick={() => onJumpNote(n)}>
         {lacksTarget(n) && <span className="note-badge attention" data-testid="no-target-badge">no target</span>}
-        <span className="mark-text">{n.kind === 'drawing' ? '(drawing)' : n.text || '(not recognized)'}</span>
+        <span className="mark-text">{n.kind === 'drawing' ? '(drawing)' : n.text || (readingIds?.has(n.id) ? '(reading…)' : '(not recognized)')}</span>
       </button>
       {n.targetIds.map((id) => (
         <button key={id} className="quote-row" onClick={() => onJumpTarget(id)}><MathText text={quote(id)} /></button>
@@ -170,7 +235,7 @@ function MarksList({
     </li>
   )
   return (
-    <div className="marks">
+    <div className="marks" ref={scrollRef} data-testid="marks-scroll">
       <div className="mark-filter">
         <button className={onlyNoTarget ? '' : 'on'} data-testid="filter-all" onClick={() => setOnlyNoTarget(false)}>
           All ({notes.length})
@@ -309,8 +374,8 @@ function useFindHighlight(root: RefObject<HTMLElement | null>, query: string, cu
   }, [query, current, tick, ...deps])
 }
 
-function NoteEditor({ note, onChanged, onDeleted, findQuery, findCurrent, findTick, mathLayout, ...links }: {
-  note: SideNote; onChanged: () => void; onDeleted: () => void; findQuery: string; findCurrent: number; findTick: number; mathLayout: MathLayout
+function NoteEditor({ paperId, note, onChanged, onDeleted, findQuery, findCurrent, findTick, mathLayout, ...links }: {
+  paperId: string; note: SideNote; onChanged: () => void; onDeleted: () => void; findQuery: string; findCurrent: number; findTick: number; mathLayout: MathLayout
 } & LinkProps) {
   const components = useMemo(() => ({
     a: ({ href, children }: { href?: string; children?: ReactNode }) => <NoteLink href={href} {...links}>{children}</NoteLink>
@@ -321,6 +386,8 @@ function NoteEditor({ note, onChanged, onDeleted, findQuery, findCurrent, findTi
   const [title, setTitle] = useState(note.title)
   const dirty = useRef(false)
   const rootRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useRememberedScroll(scrollRef, paperId, note.path, !editing)
   useFindHighlight(rootRef, editing ? '' : findQuery, findCurrent, findTick, [draft, title, editing, note.title, mathLayout])
   const rehypePlugins = useMemo(() => [[rehypeMathLayout, { mode: mathLayout }], rehypeKatex] as never, [mathLayout])
 
@@ -376,7 +443,7 @@ function NoteEditor({ note, onChanged, onDeleted, findQuery, findCurrent, findTi
           onChange={(e) => { dirty.current = true; setDraft(e.target.value) }}
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish() } }} />
       ) : (
-        <div className="markdown" data-testid="note-rendered">
+        <div className="markdown" ref={scrollRef} data-testid="note-rendered">
           <Markdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={rehypePlugins} urlTransform={noteUrl} components={components}>{draft}</Markdown>
         </div>
       )}

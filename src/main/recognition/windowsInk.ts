@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
-import { RecognitionResult } from '../../shared/types'
-import { joinLines, RecognitionEngine, RecognizeRequest } from './engine'
+import { RecognitionResult, RecognizedWord } from '../../shared/types'
+import { joinLines, markRealWords, RecognitionEngine, RecognizeRequest } from './engine'
 import { chooseBest, rawWordsIn } from './chooseBest'
 
 interface Pending {
@@ -124,11 +124,12 @@ export class WindowsInkEngine implements RecognitionEngine {
         lines: request.lines
       })
       if (!r.ok) return { ok: false, text: '', candidates: [], engine, error: String(r.error) }
-      const { text, candidates } = joinLines(r.lines as { words: { alts: string[] }[] }[])
+      const { text, candidates, words } = joinLines(r.lines as { words: { alts: string[]; box?: number[] }[] }[])
       return {
         ok: true,
         text,
         candidates,
+        words: await this.markReal(words, request.vocabulary ?? []),
         engine: { name: this.name, recognizer: String(r.recognizer ?? '') }
       }
     } catch (e) {
@@ -142,7 +143,7 @@ export class WindowsInkEngine implements RecognitionEngine {
     try {
       const r = await this.call({ method: 'recognizeAll', scale: INK_SCALE, lines: request.lines, only: request.only ?? [] })
       if (!r.ok) return { ok: false, text: '', candidates: [], engine, error: String(r.error) }
-      const readings = (r.results as { recognizer: string; lines: { words: { alts: string[] }[] }[] }[]).map((x) => ({
+      const readings = (r.results as { recognizer: string; lines: { words: { alts: string[]; box?: number[] }[] }[] }[]).map((x) => ({
         recognizer: x.recognizer,
         ...joinLines(x.lines)
       }))
@@ -155,16 +156,30 @@ export class WindowsInkEngine implements RecognitionEngine {
       const paper = new Set(request.vocabulary ?? [])
       const chosen = chooseBest(readings, (w) => valid.has(w), (w) => paper.has(w), request.preferred)
       if (!chosen) return { ok: true, text: '', candidates: [], engine: { ...engine, recognizer: readings[0].recognizer } }
+      const best = readings.find((x) => x.recognizer === chosen.best.recognizer)
       return {
         ok: true,
         text: chosen.best.text,
         candidates: chosen.best.candidates,
         alternatives: chosen.alternatives,
+        words: best ? markRealWords(best.words, (w) => valid.has(w), (w) => paper.has(w)) : undefined,
         engine: { name: this.name, recognizer: chosen.best.recognizer }
       }
     } catch (e) {
       return { ok: false, text: '', candidates: [], engine, error: (e as Error).message }
     }
+  }
+
+  /** Spell-checks the words of a single-language reading, to tell real words from maths. */
+  private async markReal(words: RecognizedWord[], vocabulary: string[]): Promise<RecognizedWord[]> {
+    const list = [...new Set(words.flatMap((w) => rawWordsIn(w.text)))]
+    let valid = new Set<string>()
+    try {
+      const spell = await this.call({ method: 'spell', words: list })
+      if (spell.ok) valid = new Set((spell.valid as string[]) ?? [])
+    } catch { /* no spell checker: only the paper's words count */ }
+    const paper = new Set(vocabulary)
+    return markRealWords(words, (w) => valid.has(w), (w) => paper.has(w))
   }
 
   dispose(): void {

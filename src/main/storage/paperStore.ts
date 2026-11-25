@@ -4,6 +4,7 @@ import {
   Annotations,
   InkFile,
   Layer,
+  LayerOwner,
   PaperEntry,
   PaperMeta,
   SCHEMA_VERSION,
@@ -41,7 +42,8 @@ export function metaFromData(data: Record<string, unknown>): PaperMeta | null {
     read_on: str(data.read_on),
     added: str(data.added),
     has_pdf: data.has_pdf === true,
-    short_name: str(data.short_name)
+    short_name: str(data.short_name),
+    ...(str(data.original) ? { original: str(data.original) } : {})
   }
 }
 
@@ -206,6 +208,21 @@ export class PaperStore {
   async saveLayer(paperId: string, authorId: string, layer: Layer): Promise<void> {
     const entry = await this.require(paperId)
     const dir = this.layerDir(entry, authorId)
+    const loadedAs = layer.annotations.authorId
+    if (loadedAs && loadedAs !== authorId) {
+      // Loaded under another identity, before a sign-in or sign-out: join it with what is saved
+      // here rather than replace it, so notes merged in from other computers are kept.
+      const saved = await this.loadLayer(paperId, authorId)
+      layer = {
+        annotations: {
+          ...layer.annotations,
+          authorId,
+          targets: unionById(layer.annotations.targets, saved.annotations.targets),
+          marginNotes: unionById(layer.annotations.marginNotes, saved.annotations.marginNotes)
+        },
+        ink: { ...layer.ink, authorId, strokes: unionById(layer.ink.strokes, saved.ink.strokes) }
+      }
+    }
     await writeAtomic(join(dir, 'annotations.json'), JSON.stringify(layer.annotations, null, 2))
     await writeAtomic(join(dir, 'ink.json'), JSON.stringify(layer.ink))
   }
@@ -302,6 +319,110 @@ export class PaperStore {
     if (!join(path).toLowerCase().startsWith(root)) throw new Error('Path is outside the workspace')
   }
 
+  /** Every `people/` folder in the library: one per computer used signed out, one per account. */
+  async layerOwners(current: string): Promise<LayerOwner[]> {
+    await this.refresh()
+    const owners = new Map<string, LayerOwner>()
+    for (const entry of this.list()) {
+      let people: string[] = []
+      try {
+        people = await fs.readdir(join(entry.folder, 'people'))
+      } catch {
+        continue
+      }
+      for (const id of people) {
+        const dir = join(entry.folder, 'people', id)
+        const changed = await newestChange(dir)
+        if (changed === null) continue
+        const o = owners.get(id) ?? { authorId: id, papers: 0, lastChanged: '', current: id === current }
+        o.papers++
+        const iso = new Date(changed).toISOString()
+        if (iso > o.lastChanged) o.lastChanged = iso
+        owners.set(id, o)
+      }
+    }
+    return [...owners.values()].sort((a, b) => b.lastChanged.localeCompare(a.lastChanged))
+  }
+
+  /**
+   * Moves every note of `from` into `to`, in every paper, so they show as one person's. Nothing is
+   * lost: marks, notes and strokes are joined by id, keeping `to`'s copy of any both have, and a
+   * file that exists in both is kept under a new name. Returns how many papers had notes to move.
+   */
+  async mergeLayers(from: string, to: string): Promise<number> {
+    if (safeSegment(from) === safeSegment(to)) return 0
+    await this.refresh()
+    let moved = 0
+    for (const entry of this.list()) {
+      const src = this.layerDir(entry, from)
+      if (!(await exists(src))) continue
+      const dest = this.layerDir(entry, to)
+      if (!(await exists(dest))) {
+        await withRetry(() => fs.rename(src, dest)).catch(async () => {
+          // A rename across a locked folder can fail on OneDrive: copy, then remove.
+          await fs.cp(src, dest, { recursive: true })
+          await fs.rm(src, { recursive: true, force: true })
+        })
+        await this.relabelNotes(join(dest, 'notes'), to)
+        await this.relabelLayer(dest, entry.meta.id, to)
+      } else {
+        await this.joinLayer(src, dest, entry.meta.id, to)
+        await fs.rm(src, { recursive: true, force: true })
+      }
+      moved++
+    }
+    return moved
+  }
+
+  private async relabelLayer(dir: string, paperId: string, authorId: string): Promise<void> {
+    for (const name of ['annotations.json', 'ink.json']) {
+      const file = join(dir, name)
+      const data = await readJson<Record<string, unknown>>(file).catch(() => null)
+      if (data) await writeAtomic(file, JSON.stringify({ ...data, paperId, authorId }, null, name === 'ink.json' ? 0 : 2))
+    }
+  }
+
+  private async relabelNotes(dir: string, authorId: string): Promise<void> {
+    let files: string[] = []
+    try {
+      files = await fs.readdir(dir)
+    } catch {
+      return
+    }
+    for (const f of files) {
+      if (!f.endsWith('.md')) continue
+      const path = join(dir, f)
+      const text = await withRetry(() => fs.readFile(path, 'utf8'))
+      const { data, body } = parseFrontmatter(text)
+      if (!data.author || data.author === authorId) continue
+      await writeAtomic(path, renderFrontmatter({ ...data, author: authorId }, body))
+    }
+  }
+
+  private async joinLayer(src: string, dest: string, paperId: string, authorId: string): Promise<void> {
+    const a = await readJson<Annotations>(join(src, 'annotations.json')).catch(() => null)
+    if (a) {
+      const b = await readJson<Annotations>(join(dest, 'annotations.json')).catch(() => null)
+      const joined: Annotations = {
+        schema: SCHEMA_VERSION,
+        paperId,
+        authorId,
+        targets: unionById(b?.targets ?? [], a.targets ?? []),
+        marginNotes: unionById(b?.marginNotes ?? [], a.marginNotes ?? [])
+      }
+      await writeAtomic(join(dest, 'annotations.json'), JSON.stringify(joined, null, 2))
+    }
+    const i = await readJson<InkFile>(join(src, 'ink.json')).catch(() => null)
+    if (i) {
+      const j = await readJson<InkFile>(join(dest, 'ink.json')).catch(() => null)
+      const joined: InkFile = { schema: SCHEMA_VERSION, paperId, authorId, strokes: unionById(j?.strokes ?? [], i.strokes ?? []) }
+      await writeAtomic(join(dest, 'ink.json'), JSON.stringify(joined))
+    }
+    // Side notes, region pictures and anything else: moved over, renamed if the name is taken.
+    await moveTree(src, dest, new Set(['annotations.json', 'ink.json']))
+    await this.relabelNotes(join(dest, 'notes'), authorId)
+  }
+
   /** Matches titles, authors, tags, margin notes and side notes. All words must match. */
   async search(query: string, authorId: string): Promise<string[]> {
     await this.ensureLoaded()
@@ -328,6 +449,56 @@ export class PaperStore {
     parts.push(...notes.flatMap((n) => [n.title, n.body]))
     return parts.join('\n').toLowerCase()
   }
+}
+
+/** Items of `first` and of `second`, by id; `first`'s copy wins when both have one. */
+function unionById<T extends { id: string }>(first: T[], second: T[]): T[] {
+  const seen = new Set(first.map((x) => x.id))
+  return [...first, ...second.filter((x) => !seen.has(x.id))]
+}
+
+/** Moves the files of `src` into `dest`, keeping both when a name exists in each. */
+async function moveTree(src: string, dest: string, skip: Set<string>): Promise<void> {
+  let items: import('node:fs').Dirent[] = []
+  try {
+    items = await fs.readdir(src, { withFileTypes: true })
+  } catch {
+    return
+  }
+  await fs.mkdir(dest, { recursive: true })
+  for (const item of items) {
+    if (skip.has(item.name)) continue
+    const from = join(src, item.name)
+    if (item.isDirectory()) {
+      await moveTree(from, join(dest, item.name), new Set())
+      continue
+    }
+    let to = join(dest, item.name)
+    if (await exists(to)) {
+      const dot = item.name.lastIndexOf('.')
+      const stem = dot > 0 ? item.name.slice(0, dot) : item.name
+      const ext = dot > 0 ? item.name.slice(dot) : ''
+      for (let n = 2; await exists(to); n++) to = join(dest, `${stem}-${n}${ext}`)
+    }
+    await moveFile(from, to)
+  }
+}
+
+/** The newest modified time of any file under `dir`, or null when it holds no files. */
+async function newestChange(dir: string): Promise<number | null> {
+  let newest: number | null = null
+  let items: import('node:fs').Dirent[] = []
+  try {
+    items = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return null
+  }
+  for (const item of items) {
+    const path = join(dir, item.name)
+    const t = item.isDirectory() ? await newestChange(path) : (await fs.stat(path).catch(() => null))?.mtimeMs ?? null
+    if (t !== null && (newest === null || t > newest)) newest = t
+  }
+  return newest
 }
 
 export function sideNoteFromText(text: string, path: string): SideNote {

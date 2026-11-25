@@ -3,7 +3,7 @@ import { InkPoint, MarginNote, Rect, Stroke, Target, isTyped } from '../../share
 import { MathText } from '../MathText'
 import { TYPED_LINE } from '../../shared/typedNotes'
 import { PdfDoc, PageSize } from './pdf'
-import { adjustRegion, joinLines } from '../../shared/markShape'
+import { adjustRegion, joinLines, outlineBlocks, outlinePath } from '../../shared/markShape'
 
 export type Tool = 'pen' | 'region' | 'eraser' | 'select'
 
@@ -140,6 +140,14 @@ function targetShape(t: Target, active: boolean, flash: boolean): ReactNode {
   const stroke = active || flash ? '#d9480f' : '#2b6cb0'
   // A marked line of text or equation is drawn as one box per line, not one per word or symbol.
   const rects = t.style === 'region' || t.style === 'equation' ? t.rects : joinLines(t.rects ?? [])
+  if (t.style === 'circle') {
+    // Lines that follow each other share one outline, as if circled in one go.
+    const padded = (rects ?? []).map((r): Rect => [r[0] - 2, r[1] - 1, r[2] + 4, r[3] + 2])
+    return outlineBlocks(padded).map((block, i) => (
+      <path key={`${t.id}-${i}`} data-target={t.id} d={outlinePath(block)}
+        fill={active ? '#ffa94d55' : 'none'} stroke={stroke} strokeWidth={1.1} strokeLinejoin="round" />
+    ))
+  }
   return rects?.map((r, i) => {
     const key = `${t.id}-${i}`
     if (t.style === 'underline') {
@@ -149,12 +157,6 @@ function targetShape(t: Target, active: boolean, flash: boolean): ReactNode {
           {active && <rect x={r[0]} y={r[1]} width={r[2]} height={r[3]} fill="#ffa94d" opacity={0.3} />}
           <line x1={r[0]} y1={y} x2={r[0] + r[2]} y2={y} stroke={stroke} strokeWidth={1.2} strokeLinecap="round" />
         </g>
-      )
-    }
-    if (t.style === 'circle') {
-      return (
-        <rect key={key} data-target={t.id} x={r[0] - 2} y={r[1] - 1} width={r[2] + 4} height={r[3] + 2}
-          rx={5} fill={active ? '#ffa94d55' : 'none'} stroke={stroke} strokeWidth={1.1} />
       )
     }
     if (t.style === 'equation') {

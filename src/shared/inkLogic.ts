@@ -613,6 +613,30 @@ export function splitLines(strokes: Stroke[]): Stroke[][] {
     host.y1 = Math.max(host.y1, small.y1)
     lines.splice(i, 1)
   }
+  // A "line" lying mostly within the height of a bigger line it overlaps sideways is part of it: two
+  // written lines cannot overlap like that. Happens when a tall symbol (∫, a big bracket) stretches a
+  // line and the writing drifts, leaving the small letters of one end in a band of their own (seen in
+  // a real note: "I am curious if ∫ f(x) would work here" split, with "am cur us" on a line of its own).
+  for (let changed = true; changed;) {
+    changed = false
+    for (const small of [...lines].sort((p, q) => p.items.length - q.items.length)) {
+      const a = span(small)
+      const host = lines.find((l) => {
+        if (l === small || l.items.length < small.items.length) return false
+        const b = span(l)
+        const inside = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) >= (a.y1 - a.y0) * 0.75
+        const overlapX = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) > 0
+        return inside && overlapX && b.y1 - b.y0 > (a.y1 - a.y0) * 1.5
+      })
+      if (!host) continue
+      host.items.push(...small.items)
+      host.y0 = Math.min(host.y0, small.y0)
+      host.y1 = Math.max(host.y1, small.y1)
+      lines.splice(lines.indexOf(small), 1)
+      changed = true
+      break
+    }
+  }
   // Short letters, dots, accents, dashes and commas join the nearest line. A dot sits above its
   // letter, so a line below counts as nearer than the same distance above it.
   for (const it of items.filter((i) => i.small)) {

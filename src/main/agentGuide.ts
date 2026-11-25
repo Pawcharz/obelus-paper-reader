@@ -23,6 +23,7 @@ Each paper is a folder: \`papers/<id>--<title>/\`.
 | File | Contents |
 |---|---|
 | \`paper.pdf\` | The paper. Never modify it. |
+| \`original.html\` | Only for papers added from an HTML report: the report itself. \`paper.pdf\` was made from it with scroll boxes, tabs and collapsed parts opened; \`original\` in \`paper.md\` names it |
 | \`paper.md\` | Metadata and tags, in the frontmatter. \`short_name\` is what the paper is usually called (such as DreamerV3), shown instead of its title; refer to papers by it when it is set |
 | \`people/<author-id>/annotations.json\` | Marks (\`targets\`) and handwritten margin notes (\`marginNotes\`) with their text |
 | \`people/<author-id>/ink.json\` | Raw pen strokes. Rarely needed, and never edit it. |
@@ -30,6 +31,10 @@ Each paper is a folder: \`papers/<id>--<title>/\`.
 | \`people/<author-id>/notes/*.md\` | Side notes, shown in the app's right pane |
 
 Do not edit \`annotations.json\` or \`ink.json\`: the app owns them.
+
+\`<author-id>\` is the reader's own folder. When the reader is signed in to the app with Google it is
+the one whose name starts with \`google-\`; otherwise each computer has its own. If there is a
+\`google-\` folder, read and write there.
 
 ## Reading the notes
 

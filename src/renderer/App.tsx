@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppSettings, PaperEntry, PreviewItem, paperLabel } from '../shared/types'
 import { Reader, ReaderSource } from './reader/Reader'
-import { GearIcon, KeyboardIcon, LibraryIcon, MapsIcon, ObelusLogo, PenModeIcon, RecordIcon } from './icons'
+import { GearIcon, KeyboardIcon, LibraryIcon, MapsIcon, ObelusLogo, PenModeIcon, PersonIcon, RecordIcon } from './icons'
 import { modeOf } from './mode'
 
-/** One or two letters for a workspace's badge in the side rail. */
+/** One or two letters for the account's badge in the side rail. */
 function initials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean)
   if (words.length === 0) return '?'
@@ -14,11 +14,21 @@ import { Library } from './library/Library'
 import { MapView } from './map/MapView'
 import { Welcome } from './library/Welcome'
 import { SettingsDialog } from './library/SettingsDialog'
+import { AccountSection } from './library/AccountSection'
 import { ConfirmHost } from './confirm'
 import { logEvent, setUsageLogging } from './usageLog'
 
 type DocTab = { key: string; title: string; source: ReaderSource }
 type View = { kind: 'library' } | { kind: 'map' } | { kind: 'doc'; key: string }
+
+const OPEN_TABS_KEY = 'paper-reader.open-tabs'
+interface OpenTabs { workspace: string; papers: string[]; view: string }
+function loadOpenTabs(): OpenTabs | null {
+  try { return JSON.parse(localStorage.getItem(OPEN_TABS_KEY) ?? 'null') as OpenTabs | null } catch { return null }
+}
+function saveOpenTabs(v: OpenTabs): void {
+  try { localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(v)) } catch { /* storage unavailable: tabs are not reopened */ }
+}
 
 interface Lookup {
   id: number
@@ -39,6 +49,7 @@ export function App() {
   const [tabs, setTabs] = useState<DocTab[]>([])
   const [toasts, setToasts] = useState<Toast[]>([])
   const [showSettings, setShowSettings] = useState(false)
+  const [showAccount, setShowAccount] = useState(false)
   const [workspaceTick, setWorkspaceTick] = useState(0)
   const nextToast = useRef(1)
   const marginTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -49,6 +60,33 @@ export function App() {
       setUsageLogging(!!s.usageLog)
     })
   }, [])
+
+  // The papers you had open, and which tab was in front, come back when the app starts. Kept per
+  // workspace on this computer; previews are left out, as they are temporary.
+  const restoredTabs = useRef(false)
+  // Saving starts only after restoring, so the empty start-up state never overwrites the saved tabs.
+  // A plain flag, not state: flipping it must not re-render the app (that unsettled the map on start-up).
+  const tabsReady = useRef(false)
+  useEffect(() => {
+    if (!settings || restoredTabs.current) return
+    restoredTabs.current = true
+    const saved = loadOpenTabs()
+    if (!saved || saved.workspace !== settings.activeWorkspaceId || saved.papers.length === 0) { tabsReady.current = true; return }
+    window.api.listPapers().then((papers) => {
+      const byId = new Map(papers.map((p) => [p.meta.id, p]))
+      const restored: DocTab[] = saved.papers
+        .map((id) => byId.get(id))
+        .filter((e): e is PaperEntry => !!e)
+        .map((entry) => ({ key: `paper:${entry.meta.id}`, title: paperLabel(entry.meta), source: { kind: 'paper', entry, fromMapId: '' } }))
+      if (restored.length > 0) {
+        setTabs((t) => (t.length ? t : restored))
+        if (saved.view === 'map') setView({ kind: 'map' })
+        else if (saved.view.startsWith('paper:') && restored.some((r) => r.key === saved.view)) setView({ kind: 'doc', key: saved.view })
+        logEvent('tabs.restored', { tabs: restored.length })
+      }
+      tabsReady.current = true
+    }).catch(() => { tabsReady.current = true })
+  }, [settings])
 
   const mode = settings ? modeOf(settings) : 'pen'
   const toggleMode = useCallback(async () => {
@@ -162,6 +200,17 @@ export function App() {
     },
     [notify, openPaper, openPreview]
   )
+
+  // Saved whenever the tabs or the tab in front change, once the earlier ones have been restored.
+  useEffect(() => {
+    if (!settings || !tabsReady.current) return
+    const papers = tabs.filter((t) => t.source.kind === 'paper').map((t) => (t.source as { entry: PaperEntry }).entry.meta.id)
+    saveOpenTabs({
+      workspace: settings.activeWorkspaceId,
+      papers,
+      view: view.kind === 'doc' ? view.key : view.kind
+    })
+  }, [tabs, view, settings])
 
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
@@ -350,7 +399,7 @@ export function App() {
   }, [view, tabs.length])
 
   if (!settings) return <div data-testid="app-root" />
-  const activeWorkspace = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
+  const account = settings.profile.account
 
   if (settings.workspaces.length === 0) {
     return (
@@ -364,25 +413,15 @@ export function App() {
   return (
     <div className="app" data-testid="app-root">
       <nav className="rail" data-testid="rail">
-        <label className="rail-workspace" title={`Workspace: ${activeWorkspace?.name ?? ''} (change or add a folder)`}>
-          <span className="rail-badge">{initials(activeWorkspace?.name ?? '')}</span>
-          <span className="rail-label">{activeWorkspace?.name}</span>
-          {/* The real list sits invisibly on top, so a tap opens the system's own menu. */}
-          <select
-            value={settings.activeWorkspaceId}
-            data-testid="workspace-select"
-            aria-label="Workspace"
-            onChange={(e) => {
-              if (e.target.value === '__add') void addWorkspace()
-              else void switchWorkspace(e.target.value)
-            }}
-          >
-            {settings.workspaces.map((w) => (
-              <option key={w.id} value={w.id}>{w.name}</option>
-            ))}
-            <option value="__add">Add a folder…</option>
-          </select>
-        </label>
+        <button
+          className={showAccount ? 'rail-account on' : 'rail-account'}
+          data-testid="account-button"
+          title={account ? `Signed in as ${account.name}${account.email ? ` (${account.email})` : ''}` : 'Not signed in: sign in to share your notes between computers'}
+          onClick={() => setShowAccount((v) => !v)}
+        >
+          <span className={account ? 'rail-badge' : 'rail-badge signed-out'}>{account ? initials(account.name) : <PersonIcon />}</span>
+          <span className="rail-label">{account ? account.name.split(/\s+/)[0] : 'Sign in'}</span>
+        </button>
         <button className={view.kind === 'library' ? 'rail-btn on' : 'rail-btn'} data-testid="nav-library" title="Library (Ctrl+1)" onClick={() => setView({ kind: 'library' })}>
           <LibraryIcon /><span className="rail-label">Library</span>
         </button>
@@ -461,7 +500,18 @@ export function App() {
 
       </div>
 
-      {showSettings && <SettingsDialog settings={settings} onClose={() => setShowSettings(false)} onSaved={setSettings} />}
+      {showSettings && (
+        <SettingsDialog settings={settings} onClose={() => setShowSettings(false)} onSaved={setSettings}
+          onSwitchWorkspace={(id) => void switchWorkspace(id)} onAddWorkspace={() => void addWorkspace()} />
+      )}
+      {showAccount && (
+        <>
+          <div className="menu-backdrop" onPointerDown={() => setShowAccount(false)} />
+          <div className="account-pop" data-testid="account-pop" onKeyDown={(e) => { if (e.key === 'Escape') setShowAccount(false) }}>
+            <AccountSection />
+          </div>
+        </>
+      )}
 
       <ConfirmHost />
       <div className="toasts">

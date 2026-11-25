@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { Api, ChangeEvent } from '../shared/api'
+import type { ModelStatus } from '../shared/types'
 
 const call =
   (channel: string) =>
@@ -13,12 +14,20 @@ const channels = [
   'defaultLibraryPath',
   'addWorkspace',
   'setActiveWorkspace',
+  'accountStatus',
+  'signInWithGoogle',
+  'cancelSignIn',
+  'signOut',
+  'listLayerOwners',
+  'mergeLayers',
   'listPapers',
   'searchPapers',
   'updatePaper',
   'readPdf',
   'pickPdf',
   'addPaperFromFile',
+  'convertHtml',
+  'openOriginal',
   'addPaperById',
   'fetchPdfForStub',
   'readFileBytes',
@@ -32,6 +41,12 @@ const channels = [
   'deletePaper',
   'listRecognizers',
   'recognize',
+  'recognizeMath',
+  'mathReady',
+  'listModels',
+  'downloadModel',
+  'cancelModelDownload',
+  'removeModel',
   'previewReference',
   'readPreview',
   'addPreview',
@@ -54,6 +69,12 @@ api.onChange = (listener: (event: ChangeEvent) => void) => {
   const handler = (_: unknown, event: ChangeEvent) => listener(event)
   ipcRenderer.on('change', handler)
   return () => ipcRenderer.removeListener('change', handler)
+}
+
+api.onModels = (listener: (status: ModelStatus) => void) => {
+  const handler = (_: unknown, status: ModelStatus) => listener(status)
+  ipcRenderer.on('models', handler)
+  return () => ipcRenderer.removeListener('models', handler)
 }
 
 contextBridge.exposeInMainWorld('api', api)

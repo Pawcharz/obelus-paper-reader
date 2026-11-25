@@ -267,6 +267,8 @@ test('undo takes back a whole written note, and writing left unprocessed is pick
   })
   await run.page.evaluate(([id, l]) => window.api.saveLayer(id as string, l as Layer), [entry.meta.id, layer] as const)
   run = await run.relaunch()
+  // The paper reopens by itself after a restart; going through the Library works either way.
+  await run.page.getByTestId('nav-library').click()
   await run.page.getByTestId('paper-row').first().locator('.title-cell').click()
   await expect
     .poll(async () => (await run.page.evaluate((id) => window.api.loadLayer(id), entry.meta.id)).annotations.marginNotes.length, { timeout: 15000 })
@@ -709,6 +711,8 @@ test('where note areas overlap, a tap picks the smaller one', async () => {
   )
   await run.page.evaluate(([id, l]) => window.api.saveLayer(id as string, l as Layer), [entry.meta.id, layer] as const)
   run = await run.relaunch()
+  // The paper reopens by itself after a restart; going through the Library works either way.
+  await run.page.getByTestId('nav-library').click()
   await run.page.getByTestId('paper-row').first().click()
   await run.page.waitForSelector('[data-testid="pdf-0"][data-rendered]')
   await run.page.waitForTimeout(300)
@@ -728,6 +732,8 @@ test('stays quick at high zoom with a lot of ink', async () => {
   }
   await run.page.evaluate(([id, l]) => window.api.saveLayer(id as string, l as Layer), [entry.meta.id, layer] as const)
   run = await run.relaunch()
+  // The paper reopens by itself after a restart; going through the Library works either way.
+  await run.page.getByTestId('nav-library').click()
   await run.page.getByTestId('paper-row').first().click()
   await run.page.waitForSelector('[data-testid="pdf-0"][data-rendered]')
   await run.page.evaluate(() => {
@@ -1393,7 +1399,9 @@ test('a tapped note is resized by dragging a corner, the opposite corner staying
   await penStroke(run.page, 0, writing(-140, 400))
   await penStroke(run.page, 0, writing(-100, 400))
   await expect.poll(async () => (await layerOf(run.page, entry.meta.id)).annotations.marginNotes.length, { timeout: 10000 }).toBe(1)
-  await run.page.waitForTimeout(1200)
+  // Wait until the note has been read, so its text cannot change during the resize.
+  await expect.poll(async () => !!(await layerOf(run.page, entry.meta.id)).annotations.marginNotes[0].engine, { timeout: 15000 }).toBe(true)
+  await run.page.waitForTimeout(600)
   const before = (await layerOf(run.page, entry.meta.id)).annotations.marginNotes[0]
   await penStroke(run.page, 0, [[-120, 405], [-120.2, 405]], 'pen', 0)
   await expect(run.page.getByTestId('note-handle-nw')).toBeVisible()

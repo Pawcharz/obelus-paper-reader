@@ -9,6 +9,8 @@ export interface DetailsForm {
   /** For adding: the PDF and what was read from it. */
   path?: string
   hints?: PdfHints
+  /** For adding an HTML report: the report; `path` is then the PDF made from it. */
+  original?: string
   /** For editing: the paper. */
   id?: string
   title: string

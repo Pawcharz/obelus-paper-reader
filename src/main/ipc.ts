@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import chokidar, { FSWatcher } from 'chokidar'
-import type { AddOutcome, AddToMapOutcome, ChangeEvent, ManualDetails, PdfHints } from '../shared/api'
+import type { AddOutcome, AddToMapOutcome, ChangeEvent, ManualDetails, PdfHints, SignInOutcome } from '../shared/api'
 import {
   AppSettings,
   Layer,
@@ -17,7 +17,8 @@ import {
   ResolvedPaper,
   SideNote,
   Workspace,
-  UsageEvent
+  UsageEvent,
+  ModelPackId
 } from '../shared/types'
 import { findArxivId, findDoi, newId, paperIdFor } from '../shared/ids'
 import { mapContains, mapShortName, suggestReferenceEdge } from '../shared/mapLogic'
@@ -28,11 +29,20 @@ import { MapStore } from './storage/mapStore'
 import { exists, writeAtomic } from './storage/atomic'
 import { NullEngine, RecognitionEngine, recognizerChoice } from './recognition/engine'
 import { WindowsInkEngine } from './recognition/windowsInk'
+import { MathEngine } from './recognition/mathEngine'
+import { VlmEngine } from './recognition/vlmEngine'
+import { labFiles, ModelMissingError, ModelStore } from './models/store'
+import { MODEL_PACKS, packsFor } from './models/catalog'
 import { Fetcher, defaultFetcher, Resolver } from './lookup/resolve'
 import { titleSimilarity } from './lookup/refText'
 import { purgeCache, touch } from './cache'
 import { fakeFetcher } from './lookup/fakeFetcher'
 import { writeAgentGuide } from './agentGuide'
+import { htmlToPdf } from './htmlToPdf'
+import { isHtmlFile } from '../shared/htmlReport'
+import { googleClient, googleClientFile } from './auth/config'
+import { SignInHandle, signInWithGoogle } from './auth/google'
+import { currentAuthorId } from '../shared/account'
 
 const PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000
 
@@ -70,10 +80,25 @@ async function trash(path: string): Promise<void> {
 export async function registerIpc(getWindow: () => BrowserWindow | null): Promise<() => void> {
   const settings = new SettingsStore(app.getPath('userData'))
   const usageLog = new UsageLog(join(app.getPath('userData'), 'usage-logs'))
+  // Local models (downloaded on request into <userData>/models): the maths reader on Windows, the
+  // handwriting reader on Linux. Files the lab scripts set up on the author's PCs are used as they are.
+  const models = new ModelStore(join(app.getPath('userData'), 'models'), {
+    overrideDir: async (id) => (id === 'math' ? (await settings.get()).mathModelDir : undefined),
+    legacy: labFiles,
+    onStatus: (s) => getWindow()?.webContents.send('models', s)
+  })
+  const packFiles = (id: ModelPackId) => async () => {
+    const found = await models.files(id)
+    if (!found) throw new ModelMissingError(`The ${MODEL_PACKS[id].title.toLowerCase()} is not downloaded.`)
+    return found.files
+  }
   const engine: RecognitionEngine =
     process.platform === 'win32'
       ? new WindowsInkEngine(resourcePath('ink-sidecar.ps1'))
-      : new NullEngine()
+      : process.platform === 'linux'
+        ? new VlmEngine({ files: packFiles('text') })
+        : new NullEngine()
+  const mathEngine = new MathEngine(packFiles('math'))
   const fetcher: Fetcher = process.env.PAPER_READER_FAKE_NET ? fakeFetcher : defaultFetcher
   const resolver = new Resolver(
     fetcher,
@@ -101,7 +126,21 @@ export async function registerIpc(getWindow: () => BrowserWindow | null): Promis
     return new MapStore((await workspaceOf(await settings.get())).path)
   }
   async function author(): Promise<string> {
-    return (await settings.get()).profile.authorId
+    return currentAuthorId(await settings.get())
+  }
+  let signIn: SignInHandle | null = null
+
+  /** Moves the notes of `from` into `to` in every library this computer knows, and says so to the window. */
+  async function mergeEverywhere(from: string[], to: string): Promise<number> {
+    const s = await settings.get()
+    let papers = 0
+    for (const ws of s.workspaces) {
+      if (!(await exists(ws.path))) continue
+      const st = storeCache?.root === ws.path ? storeCache.store : new PaperStore(ws.path)
+      for (const id of from) papers += await st.mergeLayers(id, to)
+    }
+    send({ kind: 'papers' })
+    return papers
   }
 
   function send(event: ChangeEvent): void {
@@ -188,7 +227,15 @@ export async function registerIpc(getWindow: () => BrowserWindow | null): Promis
 
   const handlers: Record<string, (...args: never[]) => unknown> = {
     getSettings: () => settings.get(),
-    updateSettings: (patch: Partial<AppSettings>) => settings.update(patch),
+    updateSettings: async (patch: Partial<AppSettings>) => {
+      if (patch.profile) {
+        // Who is signed in, and this computer's identity, change only through sign-in and sign-out.
+        const { profile } = await settings.get()
+        const { account: _a, authorId: _id, ...rest } = patch.profile
+        patch = { ...patch, profile: { ...rest, authorId: profile.authorId, ...(profile.account ? { account: profile.account } : {}) } }
+      }
+      return settings.update(patch)
+    },
     pickFolder: async () => {
       const win = getWindow()
       const r = win
@@ -215,6 +262,51 @@ export async function registerIpc(getWindow: () => BrowserWindow | null): Promis
       await watchWorkspace()
     },
 
+    accountStatus: async () => {
+      const s = await settings.get()
+      return {
+        account: s.profile.account ?? null,
+        authorId: currentAuthorId(s),
+        computerAuthorId: s.profile.authorId,
+        googleConfigured: !!(await googleClient(app.getPath('userData'))),
+        googleClientFile: googleClientFile(app.getPath('userData'))
+      }
+    },
+    signInWithGoogle: async (): Promise<SignInOutcome> => {
+      const client = await googleClient(app.getPath('userData'))
+      if (!client) return { ok: false, reason: 'Google sign-in is not set up in this copy of Obelus.' }
+      signIn?.cancel()
+      const handle = signInWithGoogle(client, (url) => shell.openExternal(url))
+      signIn = handle
+      try {
+        const account = await handle.result
+        const before = await settings.get()
+        const next = await settings.update({ profile: { ...before.profile, account } })
+        // This computer's own notes join the account's, so they follow it to other computers.
+        const merged = await mergeEverywhere([before.profile.authorId], currentAuthorId(next))
+        getWindow()?.focus()
+        return { ok: true, settings: next, merged }
+      } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+      } finally {
+        if (signIn === handle) signIn = null
+      }
+    },
+    cancelSignIn: () => {
+      signIn?.cancel()
+      signIn = null
+    },
+    signOut: async () => {
+      const s = await settings.get()
+      const { account: _gone, ...profile } = s.profile
+      return settings.update({ profile })
+    },
+    listLayerOwners: async () => (await store()).layerOwners(await author()),
+    mergeLayers: async (ids: string[]) => {
+      const to = await author()
+      return mergeEverywhere(ids.filter((id) => id !== to), to)
+    },
+
     listPapers: async () => (await store()).refresh(),
     searchPapers: async (q: string) => (await store()).search(q, await author()),
     updatePaper: async (id: string, patch: Partial<PaperMeta>) => (await store()).update(id, patch),
@@ -232,17 +324,58 @@ export async function registerIpc(getWindow: () => BrowserWindow | null): Promis
       const win = getWindow()
       const r = win
         ? await dialog.showOpenDialog(win, {
+            title: 'Add a PDF or an HTML report',
             properties: ['openFile'],
-            filters: [{ name: 'PDF', extensions: ['pdf'] }]
+            filters: [
+              { name: 'PDF or HTML report', extensions: ['pdf', 'html', 'htm'] },
+              { name: 'PDF', extensions: ['pdf'] },
+              { name: 'HTML report', extensions: ['html', 'htm'] }
+            ]
           })
         : { canceled: true, filePaths: [] }
       return r.canceled ? null : r.filePaths[0]
     },
 
-    addPaperFromFile: async (path: string, hints: PdfHints, title?: string, details?: ManualDetails): Promise<AddOutcome> => {
+    convertHtml: async (path: string) => {
+      if (!isHtmlFile(path)) return { ok: false as const, reason: 'Only .html files can be turned into a PDF' }
+      await fs.mkdir(previewsDir(), { recursive: true })
+      const pdfPath = join(previewsDir(), `${newId('html')}.pdf`)
+      try {
+        const { title } = await htmlToPdf(path, pdfPath)
+        return { ok: true as const, pdfPath, titleGuess: title }
+      } catch (e) {
+        return { ok: false as const, reason: `This report could not be turned into a PDF. ${(e as Error).message}` }
+      }
+    },
+    openOriginal: async (id: string) => {
       const st = await store()
-      const bytes = await fs.readFile(path)
+      const entry = await st.get(id)
+      if (!entry?.meta.original) return
+      const err = await shell.openPath(join(entry.folder, entry.meta.original))
+      if (err) throw new Error(err)
+    },
+
+    addPaperFromFile: async (path: string, hints: PdfHints, title?: string, details?: ManualDetails, originalHtml?: string): Promise<AddOutcome> => {
+      const st = await store()
+      // A report's PDF differs with every conversion, so the report itself decides which paper it is.
+      const bytes = await fs.readFile(originalHtml ?? path)
       const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 12)
+      if (originalHtml) {
+        // Reports are not looked up online: a title search could match an unrelated published paper.
+        if (!title) return { ok: false, reason: 'A report needs a title.', needsTitle: true, titleGuess: hints.titleGuess }
+        const meta = {
+          id: paperIdFor('', '', hash), title, authors: details?.authors ?? [], year: details?.year ?? null,
+          venue: '', arxiv: '', doi: '', url: details?.url ?? ''
+        }
+        const existed = !!(await st.get(meta.id))
+        let entry = await st.add({ meta, pdf: { path, move: true } })
+        if (!existed) {
+          const name = /\.htm$/i.test(originalHtml) ? 'original.htm' : 'original.html'
+          await fs.copyFile(originalHtml, join(entry.folder, name))
+          entry = await st.update(entry.meta.id, { original: name })
+        }
+        return { ok: true, entry, existed }
+      }
       if (title) {
         const entry = await st.add({
           meta: {
@@ -346,6 +479,20 @@ export async function registerIpc(getWindow: () => BrowserWindow | null): Promis
         vocabulary: hints?.vocabulary,
         preferred: hints?.preferred
       }),
+    recognizeMath: (image: string) => mathEngine.recognize(image),
+    /** Whether maths inside notes is found and read: switched on (the default) and the model is there. */
+    mathReady: async () => (await settings.get()).findMaths !== false && (await models.files('math')) !== null,
+    listModels: async () => Promise.all(packsFor().map((p) => models.status(p.id))),
+    downloadModel: async (id: ModelPackId) => {
+      try {
+        await models.download(id)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error).message }
+      }
+    },
+    cancelModelDownload: async (id: ModelPackId) => models.cancel(id),
+    removeModel: async (id: ModelPackId) => models.remove(id),
 
     previewReference: async (text: string): Promise<PreviewOutcome> => {
       // The same reference, or the same PDF reached from another reference, opens instantly.
@@ -478,6 +625,8 @@ export async function registerIpc(getWindow: () => BrowserWindow | null): Promis
     clearInterval(purgeTimer)
     void watcher?.close()
     engine.dispose()
+    mathEngine.dispose()
+    for (const p of packsFor()) models.cancel(p.id)
   }
 }
 

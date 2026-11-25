@@ -114,7 +114,10 @@ function Invoke-RecognizeLine($strokes, [double]$scale) {
     $sorted = @($task.Result) | Sort-Object { $_.BoundingRect.X }
     foreach ($result in $sorted) {
         $alts = @($result.GetTextCandidates())
-        [void]$words.Add(@{ alts = $alts })
+        # Where the word is, in the caller's units, so its strokes can be found (maths inside text).
+        $r = $result.BoundingRect
+        $box = @(($r.X / $scale), ($r.Y / $scale), ($r.Width / $scale), ($r.Height / $scale))
+        [void]$words.Add(@{ alts = $alts; box = $box })
     }
     return , $words
 }

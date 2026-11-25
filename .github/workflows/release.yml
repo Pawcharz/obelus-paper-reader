@@ -31,10 +31,24 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - name: Check the Google sign-in client is set
+        env:
+          ID: ${{ secrets.MAIN_VITE_GOOGLE_CLIENT_ID }}
+          SECRET: ${{ secrets.MAIN_VITE_GOOGLE_CLIENT_SECRET }}
+        shell: bash
+        run: |
+          if [ -z "$ID" ] || [ -z "$SECRET" ]; then
+            echo "::error::Add the repository secrets MAIN_VITE_GOOGLE_CLIENT_ID and MAIN_VITE_GOOGLE_CLIENT_SECRET (docs/google-sign-in.md); without them sign-in does not work in the installers."
+            exit 1
+          fi
       - run: npm run ${{ matrix.script }}
         env:
           # No signing certificate: the installers are unsigned on purpose.
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          # The Google "Desktop app" client, built into the app. Google treats a desktop client's
+          # secret as not secret (it ships in every copy); it is kept out of the repo all the same.
+          MAIN_VITE_GOOGLE_CLIENT_ID: ${{ secrets.MAIN_VITE_GOOGLE_CLIENT_ID }}
+          MAIN_VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.MAIN_VITE_GOOGLE_CLIENT_SECRET }}
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.os }}
@@ -54,10 +68,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat > notes.md <<'EOF'
+          # What's new: docs/release-notes/<tag>.md when there is one, then how to install.
+          : > notes.md
+          if [ -f "docs/release-notes/$GITHUB_REF_NAME.md" ]; then cat "docs/release-notes/$GITHUB_REF_NAME.md" >> notes.md; echo >> notes.md; fi
+          cat >> notes.md <<'EOF'
           ## Install
 
-          - **Windows:** download `Obelus-Setup-*.exe` and run it. It is not signed, so Windows SmartScreen warns once: choose **More info**, then **Run anyway**. For handwriting to become text, install Windows' handwriting support for your language (Settings → Time & language → Language & region → your language → Language options → Handwriting).
-          - **Linux:** download `Obelus-*.AppImage`, make it executable (`chmod +x Obelus-*.AppImage`) and run it. Handwriting stays as ink on Linux for now: there is no recognizer yet.
+          - **Windows:** download `Obelus-Setup-*.exe` and run it. It is not signed, so Windows SmartScreen warns once: choose **More info**, then **Run anyway**. For handwriting to become text, install Windows' handwriting support for your language (Settings → Time & language → Language & region → your language → Language options → Handwriting). Handwritten maths is read by a model that runs on your computer: the app offers to download it (2.7 GB) the first time a note needs it.
+          - **Linux:** download `Obelus-*.AppImage`, make it executable (`chmod +x Obelus-*.AppImage`) and run it. Handwriting is read by a model that runs on your computer: the app offers to download it (3.4 GB) the first time a note needs it. It needs about 4 GB of free memory and takes around ten seconds or more per note.
           EOF
           gh release create "$GITHUB_REF_NAME" installers/* --draft --title "Obelus $GITHUB_REF_NAME" --notes-file notes.md --generate-notes

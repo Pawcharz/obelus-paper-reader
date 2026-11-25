@@ -1,14 +1,20 @@
 import { useEffect, useState } from 'react'
 import { AppMode, AppSettings, InputMode, MathLayout } from '../../shared/types'
 import { detectMode, modeOf } from '../mode'
+import { ModelControls, useModels } from '../ModelPanel'
+
+const WINDOWS = /Windows/i.test(navigator.userAgent)
 
 interface Props {
   settings: AppSettings
   onClose: () => void
   onSaved: (s: AppSettings) => void
+  /** Changing the library folder takes effect at once, without Save. */
+  onSwitchWorkspace: (id: string) => void
+  onAddWorkspace: () => void
 }
 
-export function SettingsDialog({ settings, onClose, onSaved }: Props) {
+export function SettingsDialog({ settings, onClose, onSaved, onSwitchWorkspace, onAddWorkspace }: Props) {
   const [recognizers, setRecognizers] = useState<string[]>([])
   // The languages ticked; none ticked means every installed one. An older single choice carries over.
   const [chosen, setChosen] = useState<string[]>(settings.recognizers?.length ? settings.recognizers : settings.recognizer ? [settings.recognizer] : [])
@@ -20,10 +26,19 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
   const [inputMode, setInputMode] = useState<InputMode>(settings.inputMode ?? 'pen')
   const [mathLayout, setMathLayout] = useState<MathLayout>(settings.mathLayout ?? 'wrap')
   const [mode, setMode] = useState<AppMode>(modeOf(settings))
+  const [findMaths, setFindMaths] = useState(settings.findMaths !== false)
+  const models = useModels()
 
   useEffect(() => {
     void window.api.listRecognizers().then(setRecognizers)
+    // The maths switch can also be turned off from a note's offer, outside this dialog.
+    void window.api.getSettings().then((s) => setFindMaths(s.findMaths !== false))
   }, [])
+  // A model downloaded while the dialog is open adds its recognizer.
+  const modelsReady = models.filter((m) => m.state === 'ready').length
+  useEffect(() => {
+    void window.api.listRecognizers().then(setRecognizers)
+  }, [modelsReady])
 
   async function save(): Promise<void> {
     onSaved(
@@ -37,7 +52,8 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
         marginShare,
         inputMode,
         mathLayout,
-        mode
+        mode,
+        findMaths
       })
     )
     onClose()
@@ -50,6 +66,19 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
         else if (e.key === 'Escape') { e.preventDefault(); onClose() }
       }}>
         <h3>Settings</h3>
+        <label>
+          Library folder (where papers and notes are kept; switching takes effect at once)
+          <select value={settings.activeWorkspaceId} data-testid="workspace-select" onChange={(e) => {
+            if (e.target.value === '__add') onAddWorkspace()
+            else onSwitchWorkspace(e.target.value)
+          }}>
+            {settings.workspaces.map((w) => (
+              <option key={w.id} value={w.id}>{w.name}</option>
+            ))}
+            <option value="__add">Add a folder…</option>
+          </select>
+          <span className="hint" data-testid="workspace-path">{settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)?.path}</span>
+        </label>
         <label>
           Mode
           <select value={mode} data-testid="mode-select" onChange={(e) => setMode(e.target.value as AppMode)}>
@@ -110,8 +139,28 @@ export function SettingsDialog({ settings, onClose, onSaved }: Props) {
         </fieldset>
         {recognizers.length === 0 && (
           <div className="warn-banner">
-            No recognizer was found. Add a Handwriting language feature in Windows settings.
+            {WINDOWS
+              ? 'No recognizer was found. Add a Handwriting language feature in Windows settings.'
+              : 'No handwriting reader yet: download it below. Until then, notes stay as ink.'}
           </div>
+        )}
+        {models.length > 0 && (
+          <fieldset className="local-models" data-testid="local-models">
+            <legend>Reading on this computer</legend>
+            {WINDOWS && (
+              <label className="check">
+                <input type="checkbox" data-testid="find-maths" checked={findMaths} onChange={(e) => setFindMaths(e.target.checked)} />
+                Find maths written among the words of a note, and read it as maths
+              </label>
+            )}
+            {models.map((m) => (
+              <div key={m.id} className="local-model" data-testid={`model-${m.id}`}>
+                <div><b>{m.title}</b>: {m.purpose}</div>
+                <ModelControls status={m} />
+                <div className="hint">{m.credit}. Downloaded once; it runs on this computer and nothing is sent anywhere.</div>
+              </div>
+            ))}
+          </fieldset>
         )}
         <label>
           Web search address ({'{q}'} is replaced by the search text)

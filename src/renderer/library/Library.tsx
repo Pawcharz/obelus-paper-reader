@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PaperEntry, ReadStatus, paperLabel } from '../../shared/types'
 import { extractHints } from '../reader/pdf'
+import { isHtmlFile } from '../../shared/htmlReport'
 import { askConfirm } from '../confirm'
 import { TagInput } from './TagInput'
 import { DetailsDialog, DetailsForm, detailsFor, patchFrom } from './DetailsDialog'
@@ -112,6 +113,7 @@ export function Library({ onOpen, notify, onBusy, onDeleted }: Props) {
   )
 
   async function addFile(path: string): Promise<void> {
+    if (isHtmlFile(path)) return addReport(path)
     setBusy(true)
     try {
       const bytes = await window.api.readFileBytes(path)
@@ -137,6 +139,30 @@ export function Library({ onOpen, notify, onBusy, onDeleted }: Props) {
     }
   }
 
+  /**
+   * An HTML report is turned into a PDF (scroll boxes, tabs and collapsed parts opened) and kept
+   * beside it. Reports are not looked up online, so the details box always opens.
+   */
+  async function addReport(path: string): Promise<void> {
+    setBusy(true)
+    notify('Turning the HTML report into a PDF…')
+    try {
+      const c = await window.api.convertHtml(path)
+      if (!c.ok) { notify(c.reason); return }
+      const hints = await extractHints(new Uint8Array(await window.api.readFileBytes(c.pdfPath)))
+      const name = path.replace(/.*[\\/]/, '').replace(/\.html?$/i, '')
+      setTitlePrompt({
+        mode: 'add', path: c.pdfPath, hints, original: path,
+        title: c.titleGuess || name, short_name: '', authors: '',
+        year: String(new Date().getFullYear()), url: ''
+      })
+    } catch (e) {
+      notify(`This report could not be added. ${(e as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function confirmTitle(f: DetailsForm): Promise<void> {
     if (!f.title.trim()) return
     const { authors, year, url } = patchFrom(f)
@@ -149,10 +175,10 @@ export function Library({ onOpen, notify, onBusy, onDeleted }: Props) {
       return
     }
     if (!f.path || !f.hints) return
-    const r = await window.api.addPaperFromFile(f.path, f.hints, f.title.trim(), details)
-    if (r.ok && f.short_name.trim()) await window.api.updatePaper(r.entry.meta.id, { short_name: f.short_name.trim() })
+    const r = await window.api.addPaperFromFile(f.path, f.hints, f.title.trim(), details, f.original)
+    if (r.ok && f.short_name.trim() && !r.existed) await window.api.updatePaper(r.entry.meta.id, { short_name: f.short_name.trim() })
     if (r.ok) {
-      notify(`Added: ${r.entry.meta.title}`)
+      notify(r.existed ? `Already in the library: ${r.entry.meta.title}` : `Added: ${r.entry.meta.title}`)
       await reload()
     } else notify(r.reason)
   }
@@ -242,7 +268,7 @@ export function Library({ onOpen, notify, onBusy, onDeleted }: Props) {
     e.preventDefault()
     setDragging(false)
     for (const f of Array.from(e.dataTransfer.files)) {
-      if (f.name.toLowerCase().endsWith('.pdf')) await addFile(window.api.pathForFile(f))
+      if (f.name.toLowerCase().endsWith('.pdf') || isHtmlFile(f.name)) await addFile(window.api.pathForFile(f))
     }
   }
 
@@ -283,7 +309,7 @@ export function Library({ onOpen, notify, onBusy, onDeleted }: Props) {
           disabled={busy}
           onClick={() => void window.api.pickPdf().then((p) => (p ? addFile(p) : undefined))}
         >
-          Add PDF…
+          Add PDF or HTML report…
         </button>
       </div>
       {allTags.length > 0 && (

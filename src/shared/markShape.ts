@@ -42,6 +42,106 @@ function belongTogether(a: Rect, b: Rect): boolean {
   return Math.abs(midA - midB) < high / 2 && overlapY > 0 && gapX < high * 2
 }
 
+/**
+ * Line boxes (from joinLines, top to bottom) grouped into blocks that one outline can go round:
+ * each line is the next line down from the one before, with no blank line or wider gap between
+ * them, and the two share some width. A mark that jumps a gap (to another paragraph further down,
+ * another column) gets one block per part, so no outline takes in text that is not marked.
+ * The lines in a block are stretched to meet halfway between them.
+ */
+export function outlineBlocks(lines: Rect[]): Rect[][] {
+  const blocks: Rect[][] = []
+  for (const r of [...lines].sort((a, b) => a[1] - b[1] || a[0] - b[0])) {
+    const block = blocks[blocks.length - 1]
+    const prev = block?.[block.length - 1]
+    if (prev && joinsBelow(prev, r)) {
+      const mid = (prev[1] + prev[3] + r[1]) / 2
+      block[block.length - 1] = [prev[0], prev[1], prev[2], mid - prev[1]]
+      block.push([r[0], mid, r[2], r[1] + r[3] - mid])
+    } else blocks.push([[...r] as Rect])
+  }
+  return blocks.map(squareOff)
+}
+
+/**
+ * Evens out a block's edges, as a hand-drawn loop would: lines of a paragraph end at slightly
+ * different places, and a line can miss a piece the text layer did not give as a word (maths at
+ * its start). Middle lines span the block's full width; the first line keeps its own start and the
+ * last its own end, unless they fall within about a line's height of the edge.
+ */
+function squareOff(block: Rect[]): Rect[] {
+  if (block.length < 2) return block
+  const left = Math.min(...block.map((r) => r[0]))
+  const right = Math.max(...block.map((r) => r[0] + r[2]))
+  const last = block.length - 1
+  return block.map((r, i) => {
+    const near = Math.max(r[3], 8)
+    const x0 = i === 0 && r[0] - left > near ? r[0] : left
+    const x1 = i === last && right - (r[0] + r[2]) > near ? r[0] + r[2] : right
+    return [x0, r[1], x1 - x0, r[3]] as Rect
+  })
+}
+
+function joinsBelow(a: Rect, b: Rect): boolean {
+  const gap = b[1] - (a[1] + a[3])
+  const h = Math.min(a[3], b[3])
+  const sharedWidth = Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0])
+  // A line spacing is well under half a line high; a skipped line or a paragraph space is more.
+  return gap > -h / 2 && gap < h * 0.6 && sharedWidth > 0
+}
+
+/**
+ * An SVG path going round a block of stacked line boxes (see outlineBlocks): down the right edges,
+ * back up the left ones, every corner rounded by up to `radius`.
+ */
+export function outlinePath(block: Rect[], radius = 5): string {
+  if (!block.length) return ''
+  const pts: [number, number][] = []
+  for (const r of block) pts.push([r[0] + r[2], r[1]], [r[0] + r[2], r[1] + r[3]])
+  for (let i = block.length - 1; i >= 0; i--) {
+    const r = block[i]
+    pts.push([r[0], r[1] + r[3]], [r[0], r[1]])
+  }
+  const corners = dropStraight(pts)
+  const n = corners.length
+  const toward = (p: [number, number], q: [number, number], d: number): [number, number] => {
+    const len = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1
+    return [p[0] + ((q[0] - p[0]) / len) * d, p[1] + ((q[1] - p[1]) / len) * d]
+  }
+  const f = (x: number): string => String(Math.round(x * 100) / 100)
+  let d = ''
+  corners.forEach((p, i) => {
+    const a = corners[(i + n - 1) % n]
+    const b = corners[(i + 1) % n]
+    const r = Math.min(radius, Math.hypot(a[0] - p[0], a[1] - p[1]) / 2, Math.hypot(b[0] - p[0], b[1] - p[1]) / 2)
+    const s = toward(p, a, r)
+    const e = toward(p, b, r)
+    d += `${i ? 'L' : 'M'}${f(s[0])} ${f(s[1])}Q${f(p[0])} ${f(p[1])} ${f(e[0])} ${f(e[1])}`
+  })
+  return d + 'Z'
+}
+
+/** The corners of a closed outline: repeated points and points on a straight run are dropped. */
+function dropStraight(pts: [number, number][]): [number, number][] {
+  const EPS = 0.5
+  let out = pts.filter((p, i) => {
+    const q = pts[(i + pts.length - 1) % pts.length]
+    return Math.abs(p[0] - q[0]) > EPS || Math.abs(p[1] - q[1]) > EPS
+  })
+  for (let changed = true; changed && out.length > 3; ) {
+    changed = false
+    for (let i = 0; i < out.length; i++) {
+      const a = out[(i + out.length - 1) % out.length]
+      const p = out[i]
+      const b = out[(i + 1) % out.length]
+      const straight = (Math.abs(a[0] - p[0]) <= EPS && Math.abs(p[0] - b[0]) <= EPS) ||
+        (Math.abs(a[1] - p[1]) <= EPS && Math.abs(p[1] - b[1]) <= EPS)
+      if (straight) { out = out.filter((_, j) => j !== i); changed = true; break }
+    }
+  }
+  return out
+}
+
 /** A region after its grip or one of its corners was dragged by (dx, dy); it stays on the page and at least 12 units wide and high. */
 export function adjustRegion(r: Rect, how: 'move' | 'nw' | 'ne' | 'sw' | 'se', dx: number, dy: number, width: number, height: number): Rect {
   const MIN = 12

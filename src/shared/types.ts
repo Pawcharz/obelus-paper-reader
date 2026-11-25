@@ -61,6 +61,20 @@ export interface NoteReading {
   recognizer: string
 }
 
+/**
+ * One piece of a maths note's reading. `alts` are other ways to read it: the second reading's version
+ * (`why: 'readings'`, the reading is uncertain there) or the paper's styled symbols (`why: 'paper'`,
+ * only a suggestion). `line` marks the break between written lines.
+ */
+export interface MathSegment {
+  tex: string
+  alts?: string[]
+  why?: 'readings' | 'paper'
+  /** Set once you picked between the alternatives. */
+  picked?: boolean
+  line?: boolean
+}
+
 export interface MarginNote {
   id: string
   page: number
@@ -90,6 +104,12 @@ export interface MarginNote {
    * nothing written is ever lost and "Back to ink" can restore it.
    */
   hiddenInk?: Stroke[]
+  /** A maths note's reading in pieces, with the uncertain ones and their alternatives. */
+  math?: MathSegment[]
+  /** A text note with maths inside: its words and maths spans, in reading order. The text is built from them. */
+  pieces?: NotePiece[]
+  /** Strokes you said are text or maths ("this is maths"), which the automatic split must follow. */
+  forcedKinds?: { strokeIds: string[]; kind: 'text' | 'math' }[]
 }
 
 /** Whether a note was typed rather than handwritten. */
@@ -135,6 +155,8 @@ export interface PaperMeta {
   has_pdf: boolean
   /** What the paper is usually called, such as "DreamerV3"; shown instead of the title when set. */
   short_name?: string
+  /** File name, in the paper's folder, of the HTML report its PDF was made from. */
+  original?: string
 }
 
 /** How a paper is named on screen: its short name if it has one, else its title. */
@@ -171,8 +193,41 @@ export interface Workspace {
 }
 
 export interface Profile {
+  /**
+   * This computer's own identity, made on first start. Used while signed out; each computer has a
+   * different one, so their notes are kept apart.
+   */
   authorId: string
   displayName: string
+  /**
+   * The account signed in on this computer. While set, notes are kept under the account's id
+   * instead, so every computer signed in to the same account shares the same notes.
+   */
+  account?: Account
+}
+
+/** Where an account comes from. Only Google for now; an Obelus account of its own may follow. */
+export type AccountProvider = 'google'
+
+export interface Account {
+  provider: AccountProvider
+  /** The provider's stable id for the person, which never changes even if the email does. */
+  subject: string
+  email: string
+  name: string
+  picture?: string
+  /** ISO time of the sign-in. */
+  signedInAt: string
+}
+
+/** A folder of notes under `people/` in a library, and how much it holds. */
+export interface LayerOwner {
+  authorId: string
+  papers: number
+  /** ISO time of the newest change in it. */
+  lastChanged: string
+  /** Whether it is the identity notes are kept under right now. */
+  current: boolean
 }
 
 export interface AppSettings {
@@ -216,6 +271,33 @@ export interface AppSettings {
   mode?: AppMode
   /** Text size for new typed notes on this computer. */
   typedNoteSize?: TypedNoteSize
+  /**
+   * A folder that already has llama.cpp (`llama/`) and the maths model (`models/`), used instead of
+   * the downloaded copy. Missing: the downloaded copy in the app's data folder.
+   */
+  mathModelDir?: string
+  /** Whether maths written among the words of a note is found and read as maths. Missing: on. */
+  findMaths?: boolean
+  /** Model downloads the user answered "Not now" to; the app does not offer them again. */
+  declinedModels?: ModelPackId[]
+}
+
+/** A local model the app can download: "math" (Windows, maths in notes), "text" (Linux, handwriting). */
+export type ModelPackId = 'math' | 'text'
+
+export interface ModelStatus {
+  id: ModelPackId
+  title: string
+  purpose: string
+  credit: string
+  state: 'missing' | 'downloading' | 'ready' | 'error' | 'unsupported'
+  /** Bytes to download (missing, downloading) or on disk (ready). */
+  bytes: number
+  done: number
+  error?: string
+  /** "folder": files set up by hand or in a chosen folder, which the app does not delete. */
+  source?: 'downloaded' | 'folder'
+  folder?: string
 }
 
 export type AppMode = 'pen' | 'pc'
@@ -297,6 +379,35 @@ export interface RecognitionResult {
   engine: EngineInfo
   alternatives?: NoteReading[]
   error?: string
+  /** Not read because this local model is not downloaded (the app offers it instead of an error). */
+  missing?: ModelPackId
+  /** Each word read, in reading order, with where it is: used to find maths inside a text note. */
+  words?: RecognizedWord[]
+}
+
+/** A word of a text reading. `box` is relative to the top left of the note's strokes. */
+export interface RecognizedWord {
+  /** Index of the written line (splitLines order). */
+  line: number
+  text: string
+  box?: Rect
+  /** A real word: in a spell checker of a ticked language, or in the paper. */
+  real?: boolean
+}
+
+/**
+ * One piece of a note read as text with maths inside: a text word, a line break (text "\n"), or a
+ * maths span (`math` holds its reading, `text` its LaTeX). `strokeIds` are the strokes it was read from.
+ */
+export interface NotePiece {
+  kind: 'text' | 'math'
+  text: string
+  strokeIds: string[]
+  math?: MathSegment[]
+  /** Set while the maths model is still reading the span. */
+  pending?: boolean
+  /** The text/maths split was not sure about this piece, so the menu asks about it. */
+  unsure?: boolean
 }
 
 /** Paper metadata found by a lookup, plus where its PDF can be fetched. */

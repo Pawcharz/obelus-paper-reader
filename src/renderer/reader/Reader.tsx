@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { InkPoint, MarginNote, NoteReading, PaperEntry, PreviewItem, Rect, SCHEMA_VERSION, Stroke, Target, isTyped, paperLabel, type AppMode, type InputMode, type MathLayout, type TypedNoteSize } from '../../shared/types'
+import { InkPoint, MarginNote, MathSegment, NotePiece, NoteReading, RecognizedWord, PaperEntry, PreviewItem, Rect, SCHEMA_VERSION, Stroke, Target, isTyped, paperLabel, type AppMode, type InputMode, type MathLayout, type TypedNoteSize, type ModelPackId } from '../../shared/types'
 import { estimateNoteHeight, fitWithNotes, placeNote, tidyMargin, typedFontSize, TYPED_MAX_WIDTH, TYPED_SIZE_FACTOR } from '../../shared/typedNotes'
 import { wordsIn } from '../../shared/words'
 import { findArxivId, findDoi, newId } from '../../shared/ids'
@@ -12,7 +12,7 @@ import { destBox } from '../../shared/linkTarget'
 import { findQuote, linkPage, matchStarts, shownText } from '../../shared/textFind'
 import { findCaption, floatBox, floatOf, linkLabel, markLinks } from '../../shared/floatTarget'
 import { Word, buildQuote, inReferenceList, looksLikeReference, nearestWord, rectsForWords, referenceEntryAt, wordAt } from '../../shared/pageText'
-import { cropRegion, loadPageData, openPdf, PageData, pageSizes, PageSize, PdfDoc, PdfLink, resolveDest } from './pdf'
+import { cropRegion, loadPageData, openPdf, PageData, pageSizes, PageSize, paperSymbols, PdfDoc, PdfLink, resolveDest } from './pdf'
 import { useLayer } from './useLayer'
 import { isTyping, mod, plain } from '../keys'
 import { MathText, shortenMath } from '../MathText'
@@ -23,6 +23,14 @@ import { PanelToggle, ResizeHandle, useSidebar } from '../Sidebar'
 import { DetailsDialog, DetailsForm, detailsFor, patchFrom } from '../library/DetailsDialog'
 import { PencilIcon } from '../icons'
 import { flingStep, releaseVelocity, startFling, STOP_SPEED, TouchSample } from '../../shared/fling'
+import { mathImage } from './mathImage'
+import { ModelOffer } from '../ModelPanel'
+import { rememberedPosition, rememberPosition } from './positionMemory'
+import { forceKind, judgeWords, piecesText, planPieces } from '../../shared/mixedNote'
+import {
+  addPaperSuggestions, chosenSymbols, combineReadings, LINE_BREAK, MATH_ENGINE, MATH_GLYPH_PX_CHECK, MATH_RECOGNIZER,
+  mathNoteText, pickAlternative, segmentsToLatex, splitMathLines, tokens, uncertainCount
+} from '../../shared/mathInk'
 
 /** Pen idle time before writing is grouped and recognized. Writing added later still merges by closeness. */
 /** How far a finger must move sideways during a vertical scroll before the page follows sideways. */
@@ -260,6 +268,10 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
   const setPaneOpen = pane.setOpen
   const [menu, setMenu] = useState<Menu | null>(null)
   const [recognizerProblem, setRecognizerProblem] = useState('')
+  // A local model a note needed but that is not downloaded: offered once (see offerModel).
+  const [modelOffer, setModelOffer] = useState<{ id: ModelPackId; noteId: string } | null>(null)
+  const offeredModels = useRef(new Set<ModelPackId>())
+  const [readingIds, setReadingIds] = useState<ReadonlySet<string>>(new Set())
   const [, setDataTick] = useState(0)
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -329,6 +341,7 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
   const pageLogTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loggedPage = useRef(-1)
   const pendingScroll = useRef<{ page: number; y: number } | null>(null)
+  const pendingLeft = useRef<number | null>(null)
 
   /** Ink chosen with Select ink: one page at a time. */
   const [inkSel, setInkSelState] = useState<{ page: number; ids: ReadonlySet<string> } | null>(null)
@@ -435,11 +448,46 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
     const z = pc && !readOnly
       ? Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fitWithNotes(el.clientWidth - 30, sizes[0].width, margin, []).zoom))
       : Math.min(1.6, Math.max(0.7, (el.clientWidth - 40) / (sizes[0].width + shown * 2)))
+    // Back where you left the paper, unless a link asks for a page.
+    const saved = paperId && !source.goTo ? rememberedPosition(paperId) : null
+    if (saved && saved.page < sizes.length) {
+      const zs = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, saved.zoom))
+      zoomRef.current = zs
+      setZoom(zs)
+      setRenderZoom(zs)
+      pendingScroll.current = { page: saved.page, y: saved.y }
+      pendingLeft.current = saved.left
+      return
+    }
     if (pc && !readOnly) { alignRef.current = 'notes'; alignLeft.current = 0 }
     setZoom(z)
     setRenderZoom(z)
     if (pc && !readOnly) requestAnimationFrame(() => requestAnimationFrame(() => alignNow()))
   }, [sizes, active, margin, readOnly])
+
+  // Remembers where you are in the paper, a moment after scrolling or zooming stops.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !paperId || offsets.length === 0) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const save = () => {
+      if (pendingScroll.current) return // still restoring
+      const z = zoomRef.current
+      const top = el.scrollTop + 80
+      let page = 0
+      for (let i = 0; i < offsets.length; i++) if (offsets[i] <= top) page = i
+      rememberPosition(paperId, { page, y: (top - offsets[page]) / z, zoom: z, left: el.scrollLeft })
+    }
+    const onScroll = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(save, 400)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      if (timer) { clearTimeout(timer); save() }
+    }
+  }, [paperId, offsets])
 
   // Bitmaps are redrawn once a zoom settles. Until then the existing ones are stretched, as in a PDF viewer.
   useEffect(() => {
@@ -517,6 +565,7 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
     const el = scrollRef.current
     if (p && el && offsets.length > p.page) {
       el.scrollTop = offsets[p.page] + p.y * zoom - 80
+      if (pendingLeft.current !== null) { el.scrollLeft = pendingLeft.current; pendingLeft.current = null }
       pendingScroll.current = null
     }
   }, [offsets, zoom])
@@ -606,6 +655,138 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
     return () => el.removeEventListener('wheel', onWheel)
   }, [changeZoom])
 
+  /**
+   * Reads ink as maths with the local maths model, the way the Maths button and maths spans in text
+   * notes both use: written lines read one by one, a quick reading (passed to onQuick at once), then
+   * a check reading at another size whose differences mark uncertain pieces, then the paper's own
+   * symbols as suggestions. Returns null when it went stale or failed.
+   */
+  /**
+   * The first time a note needs a local model that is not there, offer to download it, unless the
+   * user said "Not now" before (or switched maths off). The note keeps its ink and plain text.
+   */
+  const offerModel = useCallback(async (id: ModelPackId, noteId: string) => {
+    if (offeredModels.current.has(id)) return
+    offeredModels.current.add(id)
+    const s = await window.api.getSettings()
+    if (s.declinedModels?.includes(id) || (id === 'math' && s.findMaths === false)) return
+    const status = (await window.api.listModels()).find((m) => m.id === id)
+    if (!status || status.state === 'unsupported' || status.state === 'ready') return
+    logEvent('model.offered', { model: id })
+    setModelOffer({ id, noteId })
+  }, [])
+
+  const readMathInk = useCallback(async (
+    strokes: Stroke[], noteId: string, stale: () => boolean, onQuick: (latex: string) => void
+  ): Promise<{ segments: MathSegment[]; lines: number; quickMs: number } | null> => {
+    const started = Date.now()
+    const lines = splitMathLines(strokes.map((s) => s.points)).map((idx) => idx.map((i) => strokes[i]))
+    const read = async (line: Stroke[], glyph?: number): Promise<string | null> => {
+      const image = mathImage(line, glyph)
+      if (!image) return ''
+      const r = await window.api.recognizeMath(image)
+      if (!r.ok) {
+        if (r.missing) void offerModel('math', noteId)
+        else setRecognizerProblem(r.error ?? 'The maths could not be read.')
+        return null
+      }
+      return r.latex
+    }
+    const withBreaks = (parts: MathSegment[][]) => parts.flatMap((p, k) => (k ? [LINE_BREAK, ...p] : p))
+    const first: string[] = []
+    for (const line of lines) {
+      const latex = await read(line)
+      if (stale() || latex === null) return null
+      first.push(latex)
+    }
+    onQuick(segmentsToLatex(withBreaks(first.map((l) => tokens(l).map((tex) => ({ tex }))))))
+    const quickMs = Date.now() - started
+    const parts: MathSegment[][] = []
+    for (let k = 0; k < lines.length; k++) {
+      const latex = await read(lines[k], MATH_GLYPH_PX_CHECK)
+      if (stale()) return null
+      parts.push(combineReadings(first[k], latex ?? first[k]))
+    }
+    const doc = docRef.current
+    const symbols = doc ? await paperSymbols(doc).catch(() => null) : null
+    if (stale()) return null
+    const mine = (layerRef.current?.annotations.marginNotes ?? [])
+      .filter((n) => n.id !== noteId)
+      .map((n) => n.text)
+      .filter((t) => t.includes('$'))
+    return { segments: addPaperSuggestions(withBreaks(parts), symbols, chosenSymbols(mine)), lines: lines.length, quickMs }
+  }, [layerRef, offerModel])
+
+  /**
+   * A text note with maths inside: words judged maths are grouped into spans, each read by the maths
+   * model, and the note's text rebuilt as words with $…$ in between. Notes with no maths are untouched.
+   */
+  const recognizeMixed = useCallback(async (noteId: string, seq: number, strokes: Stroke[], words: RecognizedWord[]) => {
+    const note = layerRef.current?.annotations.marginNotes.find((n) => n.id === noteId)
+    if (!note) return
+    // The text as Windows Ink read it: what the note keeps when its maths cannot be read.
+    const inkText = note.text
+    const judged = judgeWords(strokes, words, note.forcedKinds)
+    // Every word's score and reasons, to check the text/maths split afterwards (usage log only).
+    logEvent('note.split', {
+      note: noteId,
+      lines: judged.map((line) => line.map((j) => ({
+        w: j.word.text, s: Math.round(j.score * 100) / 100, k: j.kind, ...(j.unsure ? { unsure: true } : {}), why: j.signals
+      })))
+    })
+    const plan = planPieces(judged, strokes)
+    const stale = () => recognizeSeq.current.get(noteId) !== seq
+    const setPieces = (pieces: NotePiece[] | undefined) => mutate((d) => {
+      const n = d.annotations.marginNotes.find((x) => x.id === noteId)
+      if (!n || n.corrected || n.engine?.name === MATH_ENGINE) return
+      n.pieces = pieces
+      if (pieces) n.text = piecesText(pieces, pieceMathText)
+      n.updatedAt = new Date().toISOString()
+    }, false)
+    if (!plan) {
+      if (note.pieces) setPieces(undefined)
+      return
+    }
+    // No maths reader (switched off in Settings, or not downloaded): the note stays as Windows Ink read it.
+    if (plan.some((p) => p.kind === 'math') && !(await window.api.mathReady())) {
+      if (stale()) return
+      if (note.pieces) setPieces(undefined)
+      void offerModel('math', noteId)
+      return
+    }
+    const keepInkText = () => mutate((d) => {
+      const n = d.annotations.marginNotes.find((x) => x.id === noteId)
+      if (!n || n.corrected || n.engine?.name === MATH_ENGINE) return
+      n.pieces = undefined
+      n.text = inkText
+      n.updatedAt = new Date().toISOString()
+    }, false)
+    const started = Date.now()
+    // Maths spans start empty (shown as "…") until the maths model has read them.
+    let pieces = plan.map((p) => (p.kind === 'math' ? { ...p, text: '' } : p))
+    setPieces(pieces)
+    const byId = new Map(strokes.map((s) => [s.id, s]))
+    for (let k = 0; k < pieces.length; k++) {
+      if (pieces[k].kind !== 'math') continue
+      const spanStrokes = pieces[k].strokeIds.map((id) => byId.get(id)).filter((s): s is Stroke => !!s)
+      const res = await readMathInk(spanStrokes, noteId, stale, (latex) => {
+        pieces = pieces.map((p, i) => (i === k ? { ...p, text: latex } : p))
+        setPieces(pieces)
+      })
+      if (!res) {
+        // Failed (not just overtaken by newer writing): keep the words instead of an empty "…".
+        if (!stale()) keepInkText()
+        return
+      }
+      pieces = pieces.map((p, i) => (i === k ? { ...p, text: segmentsToLatex(res.segments), math: res.segments, pending: false } : p))
+      setPieces(pieces)
+    }
+    logEvent('note.recognized-mixed', {
+      note: noteId, words: judged.flat().length, mathWords: judged.flat().filter((j) => j.kind === 'math').length,
+      spans: pieces.filter((p) => p.kind === 'math').length, tookMs: Date.now() - started
+    })
+  }, [layerRef, mutate, readMathInk, offerModel])
+
   const recognizeOne = useCallback(async (noteId: string) => {
     const current = layerRef.current
     const note = current?.annotations.marginNotes.find((n) => n.id === noteId)
@@ -614,6 +795,8 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
     if (strokes.length === 0) return
     const seq = (recognizeSeq.current.get(noteId) ?? 0) + 1
     recognizeSeq.current.set(noteId, seq)
+    // Maths is found automatically in every note (text first, then maths spans); a note switched to
+    // maths with the old Maths button is read the same way when more is written into it.
     const vocabulary = new Set<string>()
     for (const data of pageData.current.values()) {
       for (const w of data.words) {
@@ -634,7 +817,9 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
       recognizer: result.ok ? result.engine?.recognizer : undefined
     })
     if (!result.ok) {
-      setRecognizerProblem(result.error ?? 'Handwriting could not be recognized.')
+      // The local handwriting reader (Linux) is not downloaded: offer it; the ink stays as it is.
+      if (result.missing) void offerModel(result.missing, noteId)
+      else setRecognizerProblem(result.error ?? 'Handwriting could not be recognized.')
       return
     }
     setRecognizerProblem('')
@@ -648,18 +833,26 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
       if (!n || n.corrected) return
       n.text = marked.text
       n.candidates = marked.candidates
-      n.alternatives = alternatives
+      // Other languages' readings, plus a maths reading if the note was maths before.
+      n.alternatives = [...(alternatives ?? []), ...(n.alternatives ?? []).filter((a) => a.recognizer === MATH_RECOGNIZER)]
       // Only the first reading may decide a note is a drawing, so a choice made by hand sticks.
       const firstReading = !n.engine
       n.engine = result.engine
       if (firstReading && n.kind === 'note' && looksLikeDrawing(strokes, result.text)) n.kind = 'drawing'
       n.updatedAt = new Date().toISOString()
     }, false)
-  }, [layerRef, mutate])
+    // Maths written among the words is found and read as maths.
+    const now = layerRef.current?.annotations.marginNotes.find((n) => n.id === noteId)
+    if (result.words?.length && now && now.kind !== 'drawing' && !now.corrected) {
+      await recognizeMixed(noteId, seq, strokes, result.words)
+    }
+  }, [layerRef, mutate, recognizeMixed, offerModel])
 
   /** One note at a time, with repeats merged, so recognition can never pile up behind the pen. */
+  const recognizingId = useRef('')
   const recognizeNote = useCallback(async (noteId: string) => {
     recognizeQueue.current.add(noteId)
+    setReadingIds(new Set([...recognizeQueue.current, ...(recognizingId.current ? [recognizingId.current] : [])]))
     if (recognizing.current) return
     recognizing.current = true
     try {
@@ -667,10 +860,15 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
         const [next] = recognizeQueue.current
         if (next === undefined) break
         recognizeQueue.current.delete(next)
+        recognizingId.current = next
         await recognizeOne(next)
+        recognizingId.current = ''
+        setReadingIds(new Set(recognizeQueue.current))
       }
     } finally {
       recognizing.current = false
+      recognizingId.current = ''
+      setReadingIds(new Set())
     }
   }, [recognizeOne])
 
@@ -2411,6 +2609,9 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
           }} />
       )}
       <div className="toolbar">
+        {/* The tools wrap onto more rows when the window is narrow; the end group stays in the
+            top-right corner, so the notes button is always under the right thumb. */}
+        <div className="toolbar-main">
         {!readOnly && pc && (
           <>
             <div className="tool-group" data-testid="pc-tools">
@@ -2566,8 +2767,16 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
         >
           {scrollLocked ? 'Scrollbar locked' : 'Lock scrollbar'}
         </button>}
-        <div className="spacer" />
+        </div>
+        <div className="toolbar-end">
+        {entry?.meta.original && (
+          <button data-testid="open-original" title="Open the original HTML report, with its charts and tabs working, in your browser"
+            onClick={() => void window.api.openOriginal(entry.meta.id).catch((e: Error) => notify(`The report could not be opened. ${e.message}`))}>
+            Original report ↗
+          </button>
+        )}
         {!readOnly && <PanelToggle side="right" open={paneOpen} label="notes" testId="notes-toggle" onClick={() => setPaneOpen((v) => !v)} />}
+        </div>
       </div>
 
       {readOnly && (
@@ -2597,6 +2806,10 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
             <button data-testid="pen-offer-dismiss" onClick={() => setPenOffer(false)}>Not now</button>
           </span>
         </div>
+      )}
+      {modelOffer && (
+        <ModelOffer id={modelOffer.id} onClose={() => setModelOffer(null)}
+          onReady={() => { const id = modelOffer.noteId; setModelOffer(null); void recognizeNote(id) }} />
       )}
       {recognizerProblem && <div className="warn-banner" data-testid="recognizer-problem">Your ink is saved, but it could not be turned into text: {recognizerProblem}</div>}
 
@@ -2808,19 +3021,45 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
                     editing={editingNoteId === selectedNote.id}
                     targets={allTargets ?? []}
                     onEdit={() => setEditingNoteId(selectedNote.id)}
-                    onSaveText={(text) => { logEvent('note.edit', { note: selectedNote.id, chars: text.length, before: selectedNote.text.length }); updateNote(selectedNote.id, { text, corrected: true }); setEditingNoteId('') }}
+                    onSaveText={(text) => { logEvent('note.edit', { note: selectedNote.id, chars: text.length, before: selectedNote.text.length }); updateNote(selectedNote.id, { text, corrected: true, math: undefined, pieces: undefined }); setEditingNoteId('') }}
                     onCancelEdit={() => setEditingNoteId('')}
                     onPickReading={(reading) => updateNote(selectedNote.id, {
+                      pieces: undefined,
                       text: reading.text,
                       candidates: [],
                       corrected: true,
-                      engine: selectedNote.engine ? { ...selectedNote.engine, recognizer: reading.recognizer } : undefined,
+                      // Picking the maths reading puts the note in maths mode; picking a text reading takes it out.
+                      engine: selectedNote.engine
+                        ? { name: reading.recognizer === MATH_RECOGNIZER ? MATH_ENGINE : selectedNote.engine.name === MATH_ENGINE ? 'windows-ink' : selectedNote.engine.name, recognizer: reading.recognizer }
+                        : undefined,
                       alternatives: [
                         ...(selectedNote.alternatives ?? []).filter((a) => a !== reading),
                         { text: selectedNote.text, recognizer: selectedNote.engine?.recognizer ?? '' }
                       ]
                     })}
                     onKind={(kind) => updateNote(selectedNote.id, { kind })}
+                    onPickMath={(index, alt) => {
+                      const segs = pickAlternative(selectedNote.math ?? [], index, alt)
+                      logEvent('note.math-pick', { note: selectedNote.id, why: selectedNote.math?.[index]?.why })
+                      updateNote(selectedNote.id, { math: segs, text: mathNoteText(segmentsToLatex(segs)), corrected: true })
+                    }}
+                    onPickPieceMath={(k, index, alt) => {
+                      const pieces = (selectedNote.pieces ?? []).map((pc, i) => {
+                        if (i !== k || !pc.math) return pc
+                        const math = pickAlternative(pc.math, index, alt)
+                        return { ...pc, math, text: segmentsToLatex(math) }
+                      })
+                      logEvent('note.math-pick', { note: selectedNote.id, mixed: true, why: selectedNote.pieces?.[k]?.math?.[index]?.why })
+                      updateNote(selectedNote.id, { pieces, text: piecesText(pieces, pieceMathText), corrected: true })
+                    }}
+                    onTogglePiece={(k) => {
+                      const piece = selectedNote.pieces?.[k]
+                      if (!piece || piece.strokeIds.length === 0) return
+                      const kind = piece.kind === 'math' ? 'text' : 'math'
+                      logEvent('note.piece-toggle', { note: selectedNote.id, to: kind })
+                      updateNote(selectedNote.id, { forcedKinds: forceKind(selectedNote.forcedKinds, piece.strokeIds, kind), corrected: false })
+                      void recognizeNote(selectedNote.id)
+                    }}
                     onLink={() => setLinking(selectedNote.id)}
                     onEditTyped={() => openEditor(selectedNote)}
                     onConvert={() => convertToTyped(selectedNote.id)}
@@ -2841,6 +3080,7 @@ export function Reader({ source, active, marginShare, inputMode, mode, typedNote
           <div className="side-shell right" style={{ width: pane.width }} data-testid="notes-shell">
           <ResizeHandle side="right" width={pane.width} onWidth={pane.setWidth} testId="notes-resize" />
           <RightPane
+            readingIds={readingIds}
             entry={entry}
             annotations={layer?.annotations ?? null}
             onJumpNote={(n) => { scrollTo(n.page, n.box[1]); setSelected(n.id) }}
@@ -2915,6 +3155,12 @@ interface NoteMenuProps {
   onCancelEdit: () => void
   onPickReading: (r: NoteReading) => void
   onKind: (k: MarginNote['kind']) => void
+  /** Uses one of a maths piece's alternatives in place of what was read. */
+  onPickMath: (index: number, alt: string) => void
+  /** Uses an alternative inside one maths span of a mixed note. */
+  onPickPieceMath: (piece: number, index: number, alt: string) => void
+  /** Switches one piece of a mixed note between text and maths, and reads the note again. */
+  onTogglePiece: (piece: number) => void
   onLink: () => void
   onLinkPage: () => void
   onLinkPaper: () => void
@@ -3023,6 +3269,91 @@ function TargetMenu({ target, margin, zoom, isReference, onDelete, onPreview, on
   )
 }
 
+/**
+ * A maths note's pieces that have alternatives: where the two readings differed ("Unsure") and
+ * where the paper writes a symbol differently ("The paper writes"). Tapping an alternative uses it;
+ * nothing is changed without a tap. A little LaTeX on each side shows where the piece is.
+ */
+/** A maths span of a mixed note as $…$ text: "…" until the maths model has read it. */
+function pieceMathText(p: NotePiece): string {
+  if (p.kind !== 'math') return p.text
+  const latex = p.math ? segmentsToLatex(p.math) : p.text
+  return latex ? mathNoteText(latex) : '$\\ldots$'
+}
+
+/**
+ * A mixed note's words and maths spans in reading order. Tapping one switches it between text and
+ * maths ("this is maths" / "this is text"), and the note is read again that way.
+ */
+function PieceToggles({ pieces, onToggle }: { pieces: NotePiece[]; onToggle: (index: number) => void }) {
+  const [showAll, setShowAll] = useState(false)
+  const chip = (p: NotePiece, i: number, ask = false) => (
+    <button key={i} className={`piece ${p.kind}`} data-testid={ask ? 'piece-unsure' : `piece-${p.kind}`}
+      title={p.kind === 'math' ? 'Read as maths: tap to make it text' : 'Read as text: tap to make it maths'}
+      onClick={() => onToggle(i)}>
+      {p.kind === 'math' ? <MathText text={pieceMathText(p)} /> : p.text}
+      {ask && <span className="piece-ask">{p.kind === 'math' ? ' → text' : ' → maths'}</span>}
+    </button>
+  )
+  // Only what the split was unsure about is asked; the rest is one tap away, folded.
+  const unsure = pieces.map((p, i) => ({ p, i })).filter(({ p }) => p.unsure && p.strokeIds.length > 0)
+  return (
+    <div className="menu-section" data-testid="note-pieces">
+      {unsure.length > 0 && (
+        <>
+          <div className="menu-section-label">Maths or text? {unsure.length === 1 ? 'This was unclear' : `These ${unsure.length} were unclear`}</div>
+          <div className="note-pieces">{unsure.map(({ p, i }) => chip(p, i, true))}</div>
+        </>
+      )}
+      <button className="readings-toggle" data-testid="pieces-toggle" onClick={() => setShowAll((v) => !v)}>
+        Text and maths split {showAll ? '▾' : '▸'}
+      </button>
+      {showAll && (
+        <div className="note-pieces">
+          {pieces.map((p, i) => (p.text === '\n' && p.kind === 'text' ? <span key={i} className="piece-break" /> : chip(p, i)))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MathChoices({ segments, onPick }: { segments?: MathSegment[]; onPick: (index: number, alt: string) => void }) {
+  const choices = (segments ?? []).map((s, i) => ({ s, i })).filter(({ s }) => (s.alts?.length ?? 0) > 0 && !s.line)
+  if (choices.length === 0) return null
+  const around = (i: number, step: number) => {
+    const out: string[] = []
+    for (let k = i + step; k >= 0 && k < (segments ?? []).length && out.length < 3; k += step) {
+      const t = segments![k]
+      if (t.line) break
+      if (t.tex) out.push(t.tex)
+    }
+    return step < 0 ? out.reverse().join(' ') : out.join(' ')
+  }
+  const show = (tex: string) => (tex ? <MathText text={`$${tex}$`} /> : <span className="menu-hint">nothing</span>)
+  const unsure = choices.filter(({ s }) => s.why === 'readings' && !s.picked).length
+  return (
+    <div className="menu-section" data-testid="math-choices">
+      <div className="menu-section-label">
+        {unsure > 0 ? `Check ${unsure === 1 ? 'this' : `these ${unsure}`}: the maths was unclear here` : 'Other ways to read it'}
+      </div>
+      <ul className="math-choices">
+        {choices.map(({ s, i }) => (
+          <li key={i} className={s.why === 'readings' && !s.picked ? 'unsure' : ''}>
+            <span className="math-choice-why">{s.why === 'paper' ? 'The paper writes' : s.picked ? 'Chosen' : 'Unsure'}</span>
+            <code className="math-choice-context">…{around(i, -1)}</code>
+            <span className="math-choice current" title={s.tex}>{show(s.tex)}</span>
+            <code className="math-choice-context">{around(i, 1)}…</code>
+            <span className="math-choice-or">or</span>
+            {(s.alts ?? []).map((alt) => (
+              <button key={alt} className="math-choice" data-testid="math-choice" title={alt || 'nothing'} onClick={() => onPick(i, alt)}>{show(alt)}</button>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function NoteMenu(p: NoteMenuProps) {
   const [x, y, , h] = p.note.box
   const [text, setText] = useState(p.note.text)
@@ -3059,7 +3390,7 @@ function NoteMenu(p: NoteMenuProps) {
         </div>
       ) : (
         <div className="menu-row">
-          <div className="menu-text" data-testid="note-transcription">{p.note.text || 'Not recognized yet'}</div>
+          <div className="menu-text" data-testid="note-transcription">{p.note.text ? <MathText text={p.note.text} pandoc /> : 'Not recognized yet'}</div>
           <span className="menu-hint" data-testid="note-move-hint">Drag ✥ to move it, a corner to resize</span>
           <button data-testid="note-edit-open" onClick={p.onEdit}>Edit text</button>
           <button data-testid="note-drawing" className={p.note.kind === 'drawing' ? 'on' : ''} onClick={() => p.onKind(p.note.kind === 'drawing' ? 'note' : 'drawing')}>Drawing</button>
@@ -3070,6 +3401,9 @@ function NoteMenu(p: NoteMenuProps) {
           <button data-testid="note-delete" onClick={p.onDelete}>Delete note</button>
         </div>
       )}
+      {!p.editing && <MathChoices segments={p.note.math} onPick={p.onPickMath} />}
+      {!p.editing && p.note.pieces?.map((piece, k) => piece.math ? <MathChoices key={k} segments={piece.math} onPick={(i, alt) => p.onPickPieceMath(k, i, alt)} /> : null)}
+      {!p.editing && p.note.pieces && <PieceToggles pieces={p.note.pieces} onToggle={p.onTogglePiece} />}
       {p.note.targetIds.length > 0 && (
         <div className="menu-section" data-testid="note-links">
           <div className="menu-section-label">Linked to</div>

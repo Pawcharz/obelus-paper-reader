@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, net, protocol, shell } from 'electron'
+import { app, BrowserWindow, Menu, net, protocol, screen, shell } from 'electron'
 import { join, normalize, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { registerIpc } from './ipc'
@@ -48,7 +48,14 @@ function createWindow(): BrowserWindow {
     }
   })
   win.once('ready-to-show', () => {
-    // Opens filling the screen, as a reading app should.
+    // PAPER_READER_DISPLAY=left or right opens on that screen, e.g. to keep test runs off the one in use.
+    const side = process.env.PAPER_READER_DISPLAY
+    if (side === 'left' || side === 'right') {
+      const displays = screen.getAllDisplays().sort((a, b) => a.bounds.x - b.bounds.x)
+      const d = side === 'left' ? displays[0] : displays[displays.length - 1]
+      if (d) win.setBounds({ ...d.workArea, width: Math.min(1500, d.workArea.width), height: Math.min(950, d.workArea.height) })
+    }
+    // Opens filling the screen, as a reading app should. (On Windows this also shows a hidden window.)
     win.maximize()
     if (!process.env.PAPER_READER_HIDDEN) win.show()
   })

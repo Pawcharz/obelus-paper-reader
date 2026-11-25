@@ -39,7 +39,7 @@ An obelus (÷) is the mark ancient editors put beside a passage to say *"look at
 ## What it feels like
 
 **✍️ Write in the margins, with a pen or a keyboard.**
-On a tablet, write anywhere around the page; your handwriting stays as ink and becomes text in the background (Windows Ink, in any language you install, Polish included). On a laptop or desktop, **PC mode** lets you select a sentence, press `N` and type: the note appears in the margin next to it.
+On a tablet, write anywhere around the page; your handwriting stays as ink and becomes text in the background (on Windows with Windows Ink, in any language you install, Polish included; on Linux with a model that runs on your computer). Maths written inside a note is found by itself and turned into LaTeX by a small model that also runs on your computer (Windows). On a laptop or desktop, **PC mode** lets you select a sentence, press `N` and type: the note appears in the margin next to it.
 
 **🔗 Notes point at exactly what they mean.**
 Underline or circle a sentence, an equation or a figure (or select it with the mouse), and the note you write next is linked to it, with a dashed line you can always follow back. Displayed equations become one box, with the maths kept as LaTeX.
@@ -49,9 +49,11 @@ Tap `[12]` to preview the cited paper right away, add it to your library, or dro
 
 **🗺️ Reading maps.** Lay papers out as boxes with arrows between them, in groups, with read and unread at a glance.
 
+**📄 Not only PDFs.** Add an HTML report and it becomes a PDF you can write on, with its tabs, scroll boxes and folded parts opened out. Closing the app keeps your place: the papers you had open come back, each at the page where you left it.
+
 **🤖 Works with AI agents.** Your library is a folder of plain files: PDFs, notes as JSON and Markdown, maps as JSON. The app writes a guide for agents into it, so you can open the folder in Claude Code and ask, *"answer the questions in my margin notes"*. The answers appear as a side note in the app, linked to the very notes and equations they answer.
 
-**🔒 Yours.** No account, no cloud, no tracking. Paper details are looked up on arXiv and Semantic Scholar; nothing else leaves your computer.
+**🔒 Yours.** No cloud, no tracking, and no account needed. Signing in with Google is optional: it only lets all your computers show the same notes when the library folder is synced (OneDrive or similar). Paper details are looked up on arXiv and Semantic Scholar, and the reading models are downloaded only when you say so; nothing else leaves your computer.
 
 ## Install in two minutes
 
@@ -68,6 +70,8 @@ Tap `[12]` to preview the cited paper right away, add it to your library, or dro
 **Pen or mouse?** The app picks by itself: **Pen mode** on a touchscreen, **PC mode** on a computer without one. Switch any time with the button at the bottom of the left rail.
 
 **For handwriting on Windows**, make sure a handwriting language is installed: *Settings → Time & language → Language & region → your language → Language options → Handwriting*. Without one, your ink is still saved, just not turned into text.
+
+**Models that run on your computer.** Two readers are too big for the installer, so the app offers to download them the first time a note needs one: on Windows, the maths reader (2.7 GB); on Linux, the handwriting reader (3.4 GB). Choose **Not now** and your ink stays as ink (on Windows, the maths is left as Windows Ink read it). You can download, cancel, resume or remove them later in **Settings → Reading on this computer**, where you can also stop the app from looking for maths at all. They run on the processor, need no graphics card, and stop after 15 minutes without use to free the memory.
 
 > **Early days.** Obelus is young: I use it every day, but it has been tested mostly on one tablet, by one person. If something breaks or feels clumsy, please [open an issue](https://github.com/Pawcharz/obelus-paper-reader/issues/new/choose) or [start a discussion](https://github.com/Pawcharz/obelus-paper-reader/discussions). Every report helps.
 
@@ -136,7 +140,8 @@ Everything stays on your computer, apart from looking up papers:
 
 - Adding a paper or previewing a citation asks **arXiv**, **Semantic Scholar** and **doi.org** about it, and downloads its open PDF.
 - **Search the web** (offered when nothing is found) opens Google in your browser; the address can be changed in Settings.
-- Handwriting is recognized locally by Windows.
+- Handwriting is recognized on your computer: by Windows, or by the downloaded models, which run offline. The models come from **Hugging Face** and the program that runs them from **llama.cpp's GitHub releases**, each file checked against a fixed checksum.
+- **Sign in with Google** (optional, the account button at the top of the left rail) opens Google's page in your browser. The app asks only who you are (name, email, account id), gets no access to your Google data, and keeps no token: the account is used to name the folder your notes go into.
 - An optional **usage log** (the record button in the left rail, off by default) writes what you do to local files, for finding bugs. It is never sent anywhere.
 
 </details>
@@ -165,10 +170,11 @@ Press `?` in the app for the full list. The main ones:
 
 ## Known limits
 
-- Handwriting becomes text on **Windows only**, since it uses the recognizers built into Windows. On Linux your ink is kept as drawn; a local recognizer is planned. PC mode works fully on both.
+- Handwritten maths and the Linux handwriting reader have been tuned and measured on **one person's handwriting**. They may do worse on yours; please tell me when they do.
+- On Linux, handwriting is read by a downloaded model: it needs about 4 GB of free memory, takes around ten seconds or more per note, and hasn't been tried on many Linux machines yet. Handwritten maths on Linux comes out inside the text, as `$…$`.
 - On Linux, a pen works in an X11 session; under Wayland some Electron apps ignore pen input.
 - No macOS build yet, and the installers aren't signed.
-- Handwritten maths is read as text, often poorly; typed maths (`$…$`) works well.
+- Typed maths (`$…$`) works everywhere, in both modes.
 
 ## For developers
 
@@ -195,13 +201,14 @@ GitHub Actions runs the checks and builds both installers on every push; a versi
 | Folder | What is in it |
 |---|---|
 | `src/main` | The Electron main process: library storage, paper lookups, the handwriting engine, settings |
-| `src/main/recognition` | Handwriting recognition. `resources/ink-sidecar.ps1` talks to Windows Ink; other engines can implement `RecognitionEngine` in `engine.ts` |
+| `src/main/recognition` | Handwriting recognition. `resources/ink-sidecar.ps1` talks to Windows Ink; `llamaServer.ts` runs the local models (maths on Windows, text on Linux) with llama.cpp; other engines can implement `RecognitionEngine` in `engine.ts` |
+| `src/main/models` | The downloadable models: pinned files and checksums (`catalog.ts`), resumable downloads, where they are kept |
 | `src/renderer` | The interface: library, reader, notes pane, maps |
 | `src/shared` | Logic shared by both, mostly pure and unit tested: telling writing from underlines and circles, grouping strokes into notes, placing typed notes, maths from PDF text |
 | `tests/unit`, `tests/e2e` | Unit and end-to-end tests |
 
-Contributions are welcome, especially a handwriting recognizer for Linux. Open an issue first, so we can talk it through.
+Contributions are welcome. Open an issue first, so we can talk it through.
 
 ## License
 
-[MIT](LICENSE). Free to use, change and share.
+[MIT](LICENSE). Free to use, change and share. The downloadable models and llama.cpp come under their own licenses (Apache-2.0 and MIT): see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -5,6 +5,7 @@ import { Rect } from '../../shared/types'
 import { TextItemLike, Word, wordsFromItems } from '../../shared/pageText'
 import type { PdfHints } from '../../shared/api'
 import { authorsFromInfo, guessYear } from '../../shared/pdfDetails'
+import { addPaperText, emptyPaperSymbols, PaperSymbols } from '../../shared/mathInk'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -38,8 +39,41 @@ export function openPdf(bytes: Uint8Array): Promise<PdfDoc> {
     data: bytes,
     cMapUrl: `${base}cmaps/`,
     cMapPacked: true,
-    standardFontDataUrl: `${base}standard_fonts/`
+    standardFontDataUrl: `${base}standard_fonts/`,
+    // Keeps each font's PDF name (e.g. "MSBM10"), which tells which letters the paper sets as \mathbb, \mathcal …
+    fontExtraProperties: true
   }).promise
+}
+
+const symbolCache = new WeakMap<PdfDoc, Promise<PaperSymbols>>()
+
+/**
+ * The styled letters and Greek letters a paper uses, read from its text and font names, for the
+ * maths suggestions. Computed once per open paper, in the background.
+ */
+export function paperSymbols(doc: PdfDoc): Promise<PaperSymbols> {
+  let p = symbolCache.get(doc)
+  if (!p) {
+    p = (async () => {
+      const out = emptyPaperSymbols()
+      for (let i = 1; i <= doc.numPages; i++) {
+        try {
+          const page = await doc.getPage(i)
+          await page.getOperatorList() // loads the page's fonts, and with them their names
+          const content = await page.getTextContent()
+          for (const it of content.items) {
+            if (!('str' in it) || !it.str.trim()) continue
+            let name = ''
+            try { name = (page.commonObjs.get(it.fontName) as { name?: string } | undefined)?.name ?? '' } catch { /* not loaded */ }
+            addPaperText(out, it.str, name)
+          }
+        } catch { /* a broken page adds nothing */ }
+      }
+      return out
+    })()
+    symbolCache.set(doc, p)
+  }
+  return p
 }
 
 export async function pageSizes(doc: PdfDoc): Promise<PageSize[]> {
