@@ -24,7 +24,7 @@
   &nbsp;·&nbsp; <a href="https://github.com/Pawcharz/obelus-paper-reader/discussions">Say what you think</a>
 </p>
 
-https://github.com/user-attachments/assets/2dd16f64-3886-4478-8a1e-a4566ecec201
+https://github.com/user-attachments/assets/76ed4e36-4a45-416b-9b65-e1b6a5dd7d31
 
 <p align="center"><i>Two minutes: notes and maths with a pen, citations and maps, then a mouse and keyboard.</i></p>
 
