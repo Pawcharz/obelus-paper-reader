@@ -40,6 +40,9 @@ export function openPdf(bytes: Uint8Array): Promise<PdfDoc> {
     cMapUrl: `${base}cmaps/`,
     cMapPacked: true,
     standardFontDataUrl: `${base}standard_fonts/`,
+    // Decoders for scanned pages (JBIG2, JPEG 2000) and colour profiles: without them, scans stay blank.
+    wasmUrl: `${base}wasm/`,
+    iccUrl: `${base}iccs/`,
     // Keeps each font's PDF name (e.g. "MSBM10"), which tells which letters the paper sets as \mathbb, \mathcal …
     fontExtraProperties: true
   }).promise
