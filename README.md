@@ -26,7 +26,7 @@
 
 https://github.com/user-attachments/assets/2dd16f64-3886-4478-8a1e-a4566ecec201
 
-<p align="center"><i>Two minutes: reading with a pen first, then with a mouse and keyboard.</i></p>
+<p align="center"><i>Two minutes: notes and maths with a pen, citations and maps, then a mouse and keyboard.</i></p>
 
 ---
 
